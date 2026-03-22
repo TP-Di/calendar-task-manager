@@ -1,10 +1,14 @@
 """
 Сервис Google Calendar API — чтение и запись событий.
-OAuth2 токен читается из GOOGLE_TOKEN_PATH, credentials из GOOGLE_CREDENTIALS_PATH.
+
+Credentials передаются через переменную окружения GOOGLE_CREDENTIALS_JSON
+(содержимое credentials.json в виде строки).
+Токен хранится в GOOGLE_TOKEN_JSON (env) или в файле GOOGLE_TOKEN_PATH.
 """
 
+import json
 import logging
-from datetime import datetime, timezone
+import os
 from typing import Any
 
 from google.auth.transport.requests import Request
@@ -24,26 +28,77 @@ SCOPES = [
 ]
 
 
-def _get_credentials() -> Credentials:
-    """Возвращает действующий OAuth2 токен, при необходимости обновляет."""
-    import os
-
-    creds: Credentials | None = None
+def _load_token() -> Credentials | None:
+    """
+    Загружает OAuth2 токен:
+    1. Из GOOGLE_TOKEN_JSON (env-переменная с содержимым token.json)
+    2. Из файла GOOGLE_TOKEN_PATH (fallback)
+    """
+    token_json = config.GOOGLE_TOKEN_JSON
+    if token_json:
+        try:
+            return Credentials.from_authorized_user_info(
+                json.loads(token_json), SCOPES
+            )
+        except Exception as e:
+            logger.warning("Не удалось загрузить токен из GOOGLE_TOKEN_JSON: %s", e)
 
     if os.path.exists(config.GOOGLE_TOKEN_PATH):
-        creds = Credentials.from_authorized_user_file(config.GOOGLE_TOKEN_PATH, SCOPES)
+        try:
+            return Credentials.from_authorized_user_file(config.GOOGLE_TOKEN_PATH, SCOPES)
+        except Exception as e:
+            logger.warning("Не удалось загрузить токен из файла: %s", e)
+
+    return None
+
+
+def _save_token(creds: Credentials) -> None:
+    """
+    Сохраняет токен в файл GOOGLE_TOKEN_PATH.
+    (Если используется только env, перезапишите GOOGLE_TOKEN_JSON вручную после первого запуска.)
+    """
+    try:
+        os.makedirs(os.path.dirname(config.GOOGLE_TOKEN_PATH), exist_ok=True)
+        with open(config.GOOGLE_TOKEN_PATH, "w") as f:
+            f.write(creds.to_json())
+        logger.debug("Токен сохранён: %s", config.GOOGLE_TOKEN_PATH)
+    except Exception as e:
+        logger.error("Ошибка сохранения токена: %s", e)
+
+
+def _get_credentials() -> Credentials:
+    """
+    Возвращает действующий OAuth2 токен.
+
+    Credentials (client secret) берутся из GOOGLE_CREDENTIALS_JSON —
+    переменной окружения, содержащей JSON из Google Cloud Console.
+
+    Первый запуск: если токена нет, запускается OAuth flow через CLI
+    (пользователь открывает ссылку и вводит код).
+    """
+    if not config.GOOGLE_CREDENTIALS_JSON:
+        raise RuntimeError(
+            "GOOGLE_CREDENTIALS_JSON не задан. "
+            "Вставьте содержимое credentials.json в переменную окружения."
+        )
+
+    creds = _load_token()
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
+            _save_token(creds)
         else:
-            flow = InstalledAppFlow.from_client_secrets_file(
-                config.GOOGLE_CREDENTIALS_PATH, SCOPES
-            )
+            # Первый запуск — OAuth flow через консоль
+            client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
+            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
             creds = flow.run_local_server(port=0)
-
-        with open(config.GOOGLE_TOKEN_PATH, "w") as token_file:
-            token_file.write(creds.to_json())
+            _save_token(creds)
+            logger.info(
+                "OAuth авторизация выполнена. Токен сохранён в %s.\n"
+                "Для Docker: скопируйте содержимое этого файла в GOOGLE_TOKEN_JSON.",
+                config.GOOGLE_TOKEN_PATH,
+            )
 
     return creds
 

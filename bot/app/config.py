@@ -21,10 +21,12 @@ class Config:
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-    # Google
-    GOOGLE_CREDENTIALS_PATH: str = os.getenv(
-        "GOOGLE_CREDENTIALS_PATH", "data/credentials.json"
-    )
+    # Google — содержимое credentials.json и token.json передаётся строкой JSON
+    # GOOGLE_CREDENTIALS_JSON — обязательна (вставить содержимое credentials.json)
+    # GOOGLE_TOKEN_JSON — опционально; если не задана, токен читается/пишется из файла
+    GOOGLE_CREDENTIALS_JSON: str = os.getenv("GOOGLE_CREDENTIALS_JSON", "")
+    GOOGLE_TOKEN_JSON: str = os.getenv("GOOGLE_TOKEN_JSON", "")
+    # Файловый fallback для токена (используется если GOOGLE_TOKEN_JSON не задан)
     GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "data/token.json")
 
     # Расписание
