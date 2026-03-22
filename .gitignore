@@ -8,7 +8,8 @@ bot/data/credentials.json
 
 # База данных
 bot/data/*.db
-bot/data/backups/
+bot/data/backups/*
+!bot/data/backups/.gitkeep
 
 # Python
 __pycache__/
