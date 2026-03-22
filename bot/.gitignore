@@ -7,7 +7,8 @@ data/credentials.json
 
 # База данных
 data/*.db
-data/backups/
+data/backups/*
+!data/backups/.gitkeep
 
 # Python
 __pycache__/
