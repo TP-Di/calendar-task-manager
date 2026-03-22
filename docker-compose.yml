@@ -1,0 +1,23 @@
+version: "3.9"
+
+services:
+  bot:
+    build:
+      context: ./bot
+      dockerfile: Dockerfile
+    container_name: telegram_scheduler_bot
+    restart: unless-stopped
+    env_file:
+      - ./bot/.env
+    volumes:
+      # Постоянное хранилище: SQLite БД и Google токены
+      - bot_data:/app/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot_data:
+    driver: local
