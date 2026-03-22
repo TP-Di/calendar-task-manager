@@ -1,0 +1,36 @@
+# Переменные окружения
+.env
+
+# Google OAuth токены
+data/token.json
+data/credentials.json
+
+# База данных
+data/*.db
+data/backups/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Тесты
+.pytest_cache/
+htmlcov/
+.coverage
+
+# macOS
+.DS_Store
