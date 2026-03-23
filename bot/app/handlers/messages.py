@@ -115,76 +115,94 @@ def _describe_bulk_create(events: list) -> str:
     return "\n".join(lines)
 
 
+_MONTHS_RU = [
+    "янв", "фев", "мар", "апр", "мая", "июн",
+    "июл", "авг", "сен", "окт", "ноя", "дек",
+]
+
+
+def _fmt_iso(iso: str) -> str:
+    """ISO datetime → '24 мар 16:00' (или '24 мар' если время 00:00)."""
+    try:
+        date = iso[:10]
+        time = iso[11:16]
+        _, month, day = date.split("-")
+        m = _MONTHS_RU[int(month) - 1]
+        return f"{int(day)} {m} {time}" if time and time != "00:00" else f"{int(day)} {m}"
+    except Exception:
+        return iso[:16].replace("T", " ")
+
+
+def _fmt_fields(fields: dict) -> str:
+    """Словарь изменений → читаемый список строк."""
+    lines = []
+    for key, val in fields.items():
+        label = {"title": "название", "start": "начало", "end": "конец",
+                 "description": "описание", "due": "дедлайн"}.get(key, key)
+        formatted = _fmt_iso(str(val)) if key in ("start", "end", "due") else str(val)
+        lines.append(f"  • {label}: {formatted}")
+    return "\n".join(lines)
+
+
 def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
     """Формирует читаемое описание предстоящего действия."""
     if tool_name == "bulk_create_events":
         return _describe_bulk_create(tool_args.get("events", []))
 
     if tool_name == "update_event":
-        if tool_args.get("event_title"):
-            start_str = (
-                f" ({tool_args['event_start'][:16].replace('T', ' ')})"
-                if tool_args.get("event_start") else ""
-            )
-            return (
-                f"Обновить событие: *{tool_args['event_title']}*{start_str}\n"
-                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
-            )
-        return (
-            f"Обновить событие ID: `{tool_args.get('event_id', '')}`\n"
-            f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+        fields = tool_args.get("fields", {})
+        name = tool_args.get("event_title") or f"ID `{tool_args.get('event_id', '')}`"
+        orig = (
+            f" ({_fmt_iso(tool_args['event_start'])})"
+            if tool_args.get("event_start") else ""
         )
+        return f"Обновить событие: *{name}*{orig}\n{_fmt_fields(fields)}"
 
     if tool_name == "delete_event":
-        if tool_args.get("event_title"):
-            start_str = (
-                f" ({tool_args['event_start'][:16].replace('T', ' ')})"
-                if tool_args.get("event_start") else ""
-            )
-            return f"Удалить событие: *{tool_args['event_title']}*{start_str}"
-        return f"Удалить событие ID: `{tool_args.get('event_id', '')}`"
+        name = tool_args.get("event_title") or f"ID `{tool_args.get('event_id', '')}`"
+        orig = (
+            f" ({_fmt_iso(tool_args['event_start'])})"
+            if tool_args.get("event_start") else ""
+        )
+        return f"Удалить событие: *{name}*{orig}"
 
-    descriptions = {
-        "create_event": (
-            f"Создать событие: *{tool_args.get('title', '')}*\n"
-            f"Начало: {tool_args.get('start', '')}\n"
-            f"Конец: {tool_args.get('end', '')}"
-            + (
-                "\nПовторение: " + ", ".join(
-                    r.replace("RRULE:", "") for r in tool_args["recurrence"]
-                )
-                if tool_args.get("recurrence") else ""
-            )
-            + (f"\nНапоминание: за {tool_args['reminder_minutes']} мин" if tool_args.get("reminder_minutes") is not None else "")
-            + (f"\nОписание: {tool_args.get('description', '')}" if tool_args.get("description") else "")
-        ),
-        "create_task": (
-            f"Создать задачу: *{tool_args.get('title', '')}*"
-            + (f"\nДедлайн: {tool_args.get('due', '')}" if tool_args.get("due") else "")
-        ),
-        "complete_task": (
-            f"Отметить выполненной: *{tool_args['task_title']}*"
-            if tool_args.get("task_title") else
-            f"Отметить задачу выполненной ID: `{tool_args.get('task_id', '')}`"
-        ),
-        "delete_task": (
-            f"Удалить задачу: *{tool_args['task_title']}*"
-            if tool_args.get("task_title") else
-            f"Удалить задачу ID: `{tool_args.get('task_id', '')}`"
-        ),
-        "update_task": (
-            (
-                f"Обновить задачу: *{tool_args['task_title']}*\n"
-                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
-            )
-            if tool_args.get("task_title") else
-            (
-                f"Обновить задачу ID: `{tool_args.get('task_id', '')}`\n"
-                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
-            )
-        ),
-    }
-    return descriptions.get(tool_name, f"Выполнить: {tool_name}({tool_args})")
+    if tool_name == "create_event":
+        start = _fmt_iso(tool_args.get("start", ""))
+        end_time = tool_args.get("end", "")[11:16]
+        lines = [f"Создать событие: *{tool_args.get('title', '')}*",
+                 f"Время: {start} – {end_time}"]
+        if tool_args.get("recurrence"):
+            rule = tool_args["recurrence"][0].replace("RRULE:", "")
+            lines.append(f"Повторение: {rule}")
+        if tool_args.get("reminder_minutes") is not None:
+            lines.append(f"Напоминание: за {tool_args['reminder_minutes']} мин")
+        if tool_args.get("description"):
+            lines.append(f"Описание: {tool_args['description']}")
+        return "\n".join(lines)
+
+    if tool_name == "create_task":
+        lines = [f"Создать задачу: *{tool_args.get('title', '')}*"]
+        if tool_args.get("start_time"):
+            end_t = tool_args.get("end_time", "")
+            sep = f" – {end_t}" if end_t else ""
+            lines.append(f"Время: {_fmt_iso(tool_args['start_time'])}{sep}")
+        if tool_args.get("due"):
+            lines.append(f"Дедлайн: {_fmt_iso(tool_args['due'])}")
+        if tool_args.get("description"):
+            lines.append(f"Описание: {tool_args['description']}")
+        return "\n".join(lines)
+
+    if tool_name in ("complete_task", "delete_task"):
+        name = tool_args.get("task_title") or f"ID `{tool_args.get('task_id', '')}`"
+        verb = "Отметить выполненной" if tool_name == "complete_task" else "Удалить задачу"
+        return f"{verb}: *{name}*"
+
+    if tool_name == "update_task":
+        name = tool_args.get("task_title") or f"ID `{tool_args.get('task_id', '')}`"
+        fields = tool_args.get("fields", {})
+        return f"Обновить задачу: *{name}*\n{_fmt_fields(fields)}"
+
+    return f"Выполнить: {tool_name}({tool_args})"
 
 
 @router.callback_query(F.data.startswith("confirm:"))
