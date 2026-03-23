@@ -17,6 +17,13 @@ import app.services.tasks as tasks_svc
 
 logger = logging.getLogger(__name__)
 
+
+def _is_placeholder(value: str) -> bool:
+    """Возвращает True, если значение выглядит как плейсхолдер (например <task_id>)."""
+    v = (value or "").strip()
+    return v.startswith("<") and v.endswith(">")
+
+
 # Системный промпт агента
 SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик. Помогаешь управлять расписанием и задачами через Google Calendar и Google Tasks.
 
@@ -75,6 +82,7 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 - После get_tasks у тебя есть название задачи
 - ВСЕГДА передавай `task_title` в вызов complete_task / delete_task / update_task
 - Пример: `{{"task_id": "abc123", "task_title": "Изучить Airflow"}}`
+- НИКОГДА не передавай плейсхолдеры вроде `<task_id>` или `<id>` — только реальные ID из результата get_tasks.
 
 ## Планирование задач по времени:
 - Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем вызови create_task с полями start_time и end_time.
@@ -261,7 +269,8 @@ async def run_agent(user_id: int, user_message: str) -> str:
             # и возвращаем маркер для обработки в handler
             if tool_name in CONFIRMATION_REQUIRED_TOOLS:
                 # Защита: update_event/delete_event без event_id → форсируем get_events
-                if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
+                _eid = tool_args.get("event_id", "")
+                if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
                     logger.warning(
                         "%s вызван без event_id, добавляем ошибку и повторяем итерацию",
                         tool_name,
@@ -281,7 +290,8 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     break  # Выходим из inner for-loop, outer for-loop сделает retry
 
                 # Защита: complete/delete/update_task без task_id → форсируем get_tasks
-                if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
+                _tid = tool_args.get("task_id", "")
+                if tool_name in ("complete_task", "delete_task", "update_task") and (not _tid or _is_placeholder(_tid)):
                     logger.warning(
                         "%s вызван без task_id, добавляем ошибку и повторяем итерацию",
                         tool_name,
@@ -403,14 +413,16 @@ async def execute_pending_tool(pending_data: dict) -> str:
     tool_args = pending_data["tool_args"]
     user_id = pending_data["user_id"]
 
-    # Последняя линия защиты: не выполнять update/delete с пустым ID
-    if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
-        error_text = "❌ event_id пустой — повторите запрос, я запрошу события автоматически."
+    # Последняя линия защиты: не выполнять update/delete с пустым или плейсхолдерным ID
+    _eid = tool_args.get("event_id", "")
+    if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
+        error_text = "❌ event_id некорректный — повторите запрос, я запрошу события автоматически."
         await add_message(user_id, "assistant", error_text)
         return error_text
 
-    if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
-        error_text = "❌ task_id пустой — повторите запрос, я запрошу задачи автоматически."
+    _tid = tool_args.get("task_id", "")
+    if tool_name in ("complete_task", "delete_task", "update_task") and (not _tid or _is_placeholder(_tid)):
+        error_text = "❌ task_id некорректный — повторите запрос, я запрошу задачи автоматически."
         await add_message(user_id, "assistant", error_text)
         return error_text
 
