@@ -120,6 +120,12 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
             f"Создать событие: *{tool_args.get('title', '')}*\n"
             f"Начало: {tool_args.get('start', '')}\n"
             f"Конец: {tool_args.get('end', '')}"
+            + (
+                "\nПовторение: " + ", ".join(
+                    r.replace("RRULE:", "") for r in tool_args["recurrence"]
+                )
+                if tool_args.get("recurrence") else ""
+            )
             + (f"\nОписание: {tool_args.get('description', '')}" if tool_args.get("description") else "")
         ),
         "update_event": (
