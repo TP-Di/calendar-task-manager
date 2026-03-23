@@ -165,8 +165,9 @@ async def create_event(
     description: str = "",
     tag: str = "",
     recurrence: list[str] | None = None,
+    reminder_minutes: int | None = None,
 ) -> dict:
-    """Создаёт событие в основном календаре (поддерживает RRULE)."""
+    """Создаёт событие в основном календаре (поддерживает RRULE и кастомные напоминания)."""
     import asyncio
 
     # Добавляем тег в описание
@@ -185,6 +186,11 @@ async def create_event(
             }
             if recurrence:
                 body["recurrence"] = recurrence
+            if reminder_minutes is not None:
+                body["reminders"] = {
+                    "useDefault": False,
+                    "overrides": [{"method": "popup", "minutes": reminder_minutes}],
+                }
             event = service.events().insert(calendarId="primary", body=body).execute()
             logger.info("Создано событие: %s (%s)", title, event.get("id"))
             return _format_event(event)
@@ -269,6 +275,7 @@ async def bulk_create_events(events: list[dict]) -> list[dict]:
             ev.get("description", ""),
             ev.get("tag", ""),
             ev.get("recurrence"),
+            ev.get("reminder_minutes"),
         )
         results.append(result)
     return results

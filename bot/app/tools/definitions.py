@@ -77,6 +77,10 @@ TOOLS: list[dict] = [
                         "items": {"type": "string"},
                         "description": "Правила повторения в формате RFC 5545, например ['RRULE:FREQ=WEEKLY;COUNT=9'] для 9 еженедельных повторений",
                     },
+                    "reminder_minutes": {
+                        "type": "integer",
+                        "description": "Напоминание за X минут до события. Например 90 — за 1.5 часа. Если не указано — используется стандартное (30 мин).",
+                    },
                 },
                 "required": ["title", "start", "end"],
             },
@@ -133,6 +137,10 @@ TOOLS: list[dict] = [
                                     "type": "array",
                                     "items": {"type": "string"},
                                     "description": "Правила повторения RFC 5545, например ['RRULE:FREQ=WEEKLY;COUNT=9']",
+                                },
+                                "reminder_minutes": {
+                                    "type": "integer",
+                                    "description": "Напоминание за X минут до события.",
                                 },
                             },
                             "required": ["title", "start", "end"],

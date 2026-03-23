@@ -99,14 +99,16 @@ def _describe_bulk_create(events: list) -> str:
         starts = sorted(ev.get("start", "") for ev in group)
         first_date = starts[0][:10] if starts else "?"
         rrule = group[0].get("recurrence", [])
+        reminder = group[0].get("reminder_minutes")
+        reminder_str = f", 🔔{reminder}м" if reminder is not None else ""
         if rrule:
             rule_str = rrule[0].replace("RRULE:", "")
-            lines.append(f"• *{title}* {t_start}–{t_end}, с {first_date} [{rule_str}]")
+            lines.append(f"• *{title}* {t_start}–{t_end}, с {first_date} [{rule_str}]{reminder_str}")
         elif len(group) > 1:
             last_date = starts[-1][:10]
-            lines.append(f"• *{title}* {t_start}–{t_end}, ×{len(group)} ({first_date} – {last_date})")
+            lines.append(f"• *{title}* {t_start}–{t_end}, ×{len(group)} ({first_date} – {last_date}){reminder_str}")
         else:
-            lines.append(f"• *{title}* {t_start}–{t_end}, {first_date}")
+            lines.append(f"• *{title}* {t_start}–{t_end}, {first_date}{reminder_str}")
     return "\n".join(lines)
 
 
@@ -126,6 +128,7 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
                 )
                 if tool_args.get("recurrence") else ""
             )
+            + (f"\nНапоминание: за {tool_args['reminder_minutes']} мин" if tool_args.get("reminder_minutes") is not None else "")
             + (f"\nОписание: {tool_args.get('description', '')}" if tool_args.get("description") else "")
         ),
         "update_event": (
