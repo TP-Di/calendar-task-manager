@@ -102,6 +102,14 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     logger.info("Бэкап БД запланирован на 03:00 UTC ежедневно")
 
 
+async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Минимальный HTTP health check для DigitalOcean."""
+    await reader.read(1024)
+    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+    await writer.drain()
+    writer.close()
+
+
 async def main() -> None:
     """Основная функция запуска бота."""
     logger.info("Запуск бота...")
@@ -141,6 +149,11 @@ async def main() -> None:
     scheduler.start()
     logger.info("APScheduler запущен")
 
+    # Health check сервер для DigitalOcean (порт 8080)
+    health_port = int(os.environ.get("PORT", 8080))
+    health_server = await asyncio.start_server(_health_handler, "0.0.0.0", health_port)
+    logger.info("Health check server запущен на порту %d", health_port)
+
     # Запускаем polling
     logger.info(
         "Бот запущен. Разрешённые пользователи: %s",
@@ -149,6 +162,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
+        health_server.close()
         scheduler.shutdown()
         await bot.session.close()
         logger.info("Бот остановлен")
