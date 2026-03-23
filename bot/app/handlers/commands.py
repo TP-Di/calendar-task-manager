@@ -1,13 +1,14 @@
 """
-Обработчики команд: /start /help /status /load /done /postpone /clear
+Обработчики команд: /start /help /status /load /done /postpone /clear /heatmap
 """
 
+import io
 import logging
 from datetime import datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeyboardMarkup
 
 from app.config import config
 from app.db.database import clear_history
@@ -19,12 +20,132 @@ router = Router()
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📅 Нагрузка")],
+        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="🗺 Тепловая карта")],
         [KeyboardButton(text="🗓 Что сегодня?"), KeyboardButton(text="📋 Задачи")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Напиши или выбери действие...",
 )
+
+
+async def _generate_heatmap_image(events: list, tz_str: str, days: int = 7) -> bytes:
+    """Генерирует PNG тепловой карты расписания на N дней начиная с сегодня."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo(tz_str)
+    now = datetime.now(tz)
+    start_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    HOUR_START, HOUR_END = 6, 24
+    N = HOUR_END - HOUR_START  # 18 часов
+
+    BG, AX, GRID, TEXT = "#0d1117", "#161b22", "#30363d", "#e6edf3"
+    RED_FC, RED_EC = "#f85149", "#da3633"
+    YEL_FC, YEL_EC = "#e3b341", "#d29922"
+
+    fig, ax = plt.subplots(figsize=(max(days * 1.9, 13), 10))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(AX)
+
+    # Сетка
+    for h in range(N + 1):
+        lw = 1.0 if h % 3 == 0 else 0.35
+        ax.axhline(h, color=GRID, linewidth=lw, zorder=1)
+    for d in range(days + 1):
+        ax.axvline(d, color=GRID, linewidth=0.9, zorder=1)
+
+    for ev in events:
+        start_str = ev.get("start", "")
+        end_str = ev.get("end", "")
+        if not start_str or "T" not in start_str:
+            continue
+        try:
+            sd = datetime.fromisoformat(start_str.replace("Z", "+00:00")).astimezone(tz)
+            ed = datetime.fromisoformat(end_str.replace("Z", "+00:00")).astimezone(tz)
+        except Exception:
+            continue
+
+        di = (sd.date() - start_day.date()).days
+        if di < 0 or di >= days:
+            continue
+
+        ys = (sd.hour + sd.minute / 60) - HOUR_START
+        ye = (ed.hour + ed.minute / 60) - HOUR_START
+        if ye <= 0 or ys >= N:
+            continue
+        ys, ye = max(ys, 0.0), min(ye, float(N))
+        h_rect = ye - ys
+
+        title = ev.get("title", "")
+        desc = ev.get("description", "") or ""
+        is_soft = "[SOFT]" in title or "[SOFT]" in desc
+        fc, ec = (YEL_FC, YEL_EC) if is_soft else (RED_FC, RED_EC)
+
+        ax.add_patch(plt.Rectangle(
+            (di + 0.06, ys), 0.88, h_rect,
+            facecolor=fc, edgecolor=ec, linewidth=1.3, alpha=0.88, zorder=2,
+        ))
+
+        if h_rect >= 0.45:
+            label = title.replace("[HARD]", "").replace("[SOFT]", "").strip()
+            label = label[:14] + "…" if len(label) > 16 else label
+            ax.text(
+                di + 0.5, ys + h_rect / 2, label,
+                ha="center", va="center",
+                fontsize=6.5, color="#0d1117", fontweight="bold",
+                zorder=3, clip_on=True,
+            )
+
+    # Ось Y — утро сверху
+    ax.set_ylim(N, 0)
+    ax.set_xlim(0, days)
+    ax.set_yticks(range(N + 1))
+    ax.set_yticklabels([f"{HOUR_START + h:02d}:00" for h in range(N + 1)], fontsize=8, color=TEXT)
+
+    day_labels = []
+    for i in range(days):
+        d = start_day + timedelta(days=i)
+        prefix = "▶ " if d.date() == now.date() else ""
+        day_labels.append(prefix + d.strftime("%a\n%d.%m"))
+    ax.set_xticks([i + 0.5 for i in range(days)])
+    ax.set_xticklabels(day_labels, fontsize=9, color=TEXT)
+    ax.tick_params(axis="both", which="both", length=0)
+
+    for sp in ax.spines.values():
+        sp.set_color(GRID)
+
+    # Линия текущего времени
+    today_idx = (now.date() - start_day.date()).days
+    if 0 <= today_idx < days:
+        cur_h = now.hour + now.minute / 60 - HOUR_START
+        if 0 <= cur_h <= N:
+            ax.plot(
+                [today_idx, today_idx + 1], [cur_h, cur_h],
+                color="#3fb950", linewidth=2.2, linestyle="--", zorder=4, alpha=0.9,
+            )
+
+    # Легенда
+    ax.legend(
+        handles=[
+            mpatches.Patch(facecolor=RED_FC, edgecolor=RED_EC, label="Нельзя перенести"),
+            mpatches.Patch(facecolor=YEL_FC, edgecolor=YEL_EC, label="Можно перенести"),
+        ],
+        loc="upper right",
+        facecolor="#161b22", edgecolor=GRID,
+        labelcolor=TEXT, fontsize=9, framealpha=0.95,
+    )
+    ax.set_title("Тепловая карта расписания", color=TEXT, fontsize=13, fontweight="bold", pad=12)
+
+    plt.tight_layout(pad=1.5)
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    plt.close(fig)
+    buf.seek(0)
+    return buf.read()
 
 
 @router.message(Command("start"))
@@ -43,9 +164,9 @@ async def btn_status(message: Message) -> None:
     await cmd_status(message)
 
 
-@router.message(F.text == "📅 Нагрузка")
-async def btn_load(message: Message) -> None:
-    await cmd_load(message)
+@router.message(F.text == "🗺 Тепловая карта")
+async def btn_heatmap(message: Message) -> None:
+    await cmd_heatmap(message)
 
 
 @router.message(F.text == "🗓 Что сегодня?")
@@ -112,7 +233,7 @@ async def cmd_help(message: Message) -> None:
         "Просто пиши что нужно — я пойму без команд.\n\n"
         "*Кнопки:*\n"
         "📊 Статус — задачи и события на 3 дня\n"
-        "📅 Нагрузка — часы событий на неделю\n"
+        "🗺 Тепловая карта — визуальный график расписания на неделю\n"
         "🗓 Что сегодня? — события на сегодня\n"
         "📋 Задачи — список активных задач\n\n"
         "*Команды:*\n"
@@ -325,4 +446,36 @@ async def cmd_clear(message: Message) -> None:
     await clear_history(user_id)
     await message.answer(
         "🗑 История диалога очищена. Начинаем с чистого листа!"
+    )
+
+
+@router.message(Command("heatmap"))
+async def cmd_heatmap(message: Message) -> None:
+    """Показывает тепловую карту расписания на текущую неделю."""
+    await message.answer("⏳ Строю тепловую карту...")
+
+    now = datetime.now(timezone.utc)
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_end = week_start + timedelta(days=7)
+
+    try:
+        events = await cal.get_events(week_start.isoformat(), week_end.isoformat())
+    except Exception as e:
+        logger.error("Ошибка Calendar API (/heatmap): %s", e)
+        await message.answer("❌ Ошибка загрузки событий из Calendar")
+        return
+
+    try:
+        img_bytes = await _generate_heatmap_image(events, config.TIMEZONE)
+    except Exception as e:
+        logger.error("Ошибка генерации heatmap: %s", e)
+        await message.answer(f"❌ Ошибка генерации графика: {e}")
+        return
+
+    photo = BufferedInputFile(img_bytes, filename="heatmap.png")
+    await message.answer_photo(
+        photo,
+        caption="📊 Расписание на текущую неделю\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
     )
