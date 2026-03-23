@@ -7,6 +7,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -102,12 +103,18 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     logger.info("Бэкап БД запланирован на 03:00 UTC ежедневно")
 
 
-async def _health_handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-    """Минимальный HTTP health check для DigitalOcean."""
-    await reader.read(1024)
-    writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
-    await writer.drain()
-    writer.close()
+async def _start_health_server(port: int) -> web.AppRunner:
+    """Запускает aiohttp health check сервер для DigitalOcean."""
+    async def handle(_request: web.Request) -> web.Response:
+        return web.Response(text="OK")
+
+    app = web.Application()
+    app.router.add_get("/", handle)
+    app.router.add_get("/health", handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    return runner
 
 
 async def main() -> None:
@@ -151,7 +158,7 @@ async def main() -> None:
 
     # Health check сервер для DigitalOcean (порт 8080)
     health_port = int(os.environ.get("PORT", 8080))
-    health_server = await asyncio.start_server(_health_handler, "0.0.0.0", health_port)
+    health_runner = await _start_health_server(health_port)
     logger.info("Health check server запущен на порту %d", health_port)
 
     # Запускаем polling
@@ -162,7 +169,7 @@ async def main() -> None:
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
-        health_server.close()
+        await health_runner.cleanup()
         scheduler.shutdown()
         await bot.session.close()
         logger.info("Бот остановлен")
