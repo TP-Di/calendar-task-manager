@@ -1,7 +1,6 @@
 # Telegram AI Scheduler Bot
 
-<!-- header image placeholder — replace path once image is added to repo -->
-<!-- ![header](docs/header.png) -->
+![header](https://drive.google.com/uc?id=1bZpwudnXLsSWLIdvTQk22iPTbzBHAgEq)
 
 Персональный бот-планировщик с AI-агентом. Управляет Google Calendar и Google Tasks через чат на естественном языке.
 
