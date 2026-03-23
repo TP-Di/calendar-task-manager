@@ -53,17 +53,20 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         briefing_hour, briefing_minute = 8, 0
         logger.warning("Неверный формат BRIEFING_TIME, используется 08:00")
 
-    # Утренний брифинг по расписанию
+    # Утренний брифинг по расписанию (время в локальной зоне пользователя)
     scheduler.add_job(
         send_briefing,
         trigger="cron",
         hour=briefing_hour,
         minute=briefing_minute,
+        timezone=config.TIMEZONE,
         args=[bot],
         id="morning_briefing",
         replace_existing=True,
     )
-    logger.info("Брифинг запланирован на %02d:%02d UTC", briefing_hour, briefing_minute)
+    logger.info(
+        "Брифинг запланирован на %02d:%02d %s", briefing_hour, briefing_minute, config.TIMEZONE
+    )
 
     # Напоминания о дедлайнах (каждые N часов)
     scheduler.add_job(

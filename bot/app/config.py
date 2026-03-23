@@ -30,7 +30,7 @@ class Config:
     GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "data/token.json")
 
     # Расписание
-    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "08:00")  # HH:MM
+    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "06:00")  # HH:MM локального времени (TIMEZONE)
     REMINDER_INTERVAL_HOURS: int = int(os.getenv("REMINDER_INTERVAL_HOURS", "1"))
     QUIET_HOUR_START: int = int(os.getenv("QUIET_HOUR_START", "23"))
     QUIET_HOUR_END: int = int(os.getenv("QUIET_HOUR_END", "6"))
