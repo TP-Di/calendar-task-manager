@@ -19,7 +19,7 @@ class Config:
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct")
 
     # Google — содержимое credentials.json и token.json передаётся строкой JSON
     # GOOGLE_CREDENTIALS_JSON — обязательна (вставить содержимое credentials.json)

@@ -1,8 +1,11 @@
 # Telegram AI Scheduler Bot
 
+<!-- header image placeholder — replace path once image is added to repo -->
+<!-- ![header](docs/header.png) -->
+
 Персональный бот-планировщик с AI-агентом. Управляет Google Calendar и Google Tasks через чат на естественном языке.
 
-**Стек:** Python 3.11 · aiogram 3 · Groq (llama-3.3-70b-versatile) · Google Calendar/Tasks API · aiosqlite · APScheduler · Docker
+**Стек:** Python 3.11 · aiogram 3 · Groq (llama-4-maverick) · Google Calendar/Tasks API · aiosqlite · APScheduler · Docker
 
 ---
 
@@ -17,6 +20,7 @@
 - **Утренний брифинг** — в настраиваемое время отправляет сводку на день
 - **Напоминания** — за 24ч / 3ч / 1ч до дедлайна, с кнопкой снуза
 - **Тихие часы** — ночью напоминания не отправляет
+- **Тепловая карта** — `/heatmap` показывает расписание недели + pie chart нагрузки по категориям
 - **Парсинг PDF** — загружаешь файл с расписанием, агент предлагает создать события и задачи
 - **Whitelist** — отвечает только указанным пользователям, остальных молча игнорирует
 
@@ -106,6 +110,7 @@ BOT_TOKEN=7123456789:AAF...
 ALLOWED_IDS=123456789
 GROQ_API_KEY=gsk_...
 GOOGLE_CREDENTIALS_JSON={"installed":{...}}   # содержимое credentials.json
+TIMEZONE=Europe/Moscow                         # твоя временная зона
 ```
 
 #### Первая авторизация Google
@@ -174,14 +179,15 @@ docker-compose logs -f
 | `BOT_TOKEN` | Токен из BotFather | `7123:AAF...` |
 | `ALLOWED_IDS` | Telegram ID через запятую | `123456789,987654321` |
 | `GROQ_API_KEY` | Ключ Groq API | `gsk_...` |
-| `GROQ_MODEL` | Модель Groq | `llama-3.3-70b-versatile` |
+| `GROQ_MODEL` | Модель Groq | `meta-llama/llama-4-maverick-17b-128e-instruct` |
 | `GOOGLE_CREDENTIALS_JSON` | Содержимое credentials.json | `{"installed":{...}}` |
 | `GOOGLE_TOKEN_JSON` | Содержимое token.json (опционально) | `{"token":"ya29..."}` |
 | `GOOGLE_TOKEN_PATH` | Путь для сохранения токена | `data/token.json` |
-| `BRIEFING_TIME` | Время брифинга UTC (ЧЧ:ММ) | `08:00` |
+| `TIMEZONE` | Временная зона (IANA) | `Europe/Moscow` |
+| `BRIEFING_TIME` | Время брифинга в локальной зоне (ЧЧ:ММ) | `06:00` |
 | `REMINDER_INTERVAL_HOURS` | Интервал проверки дедлайнов (ч) | `1` |
-| `QUIET_HOUR_START` | Начало тихих часов (UTC) | `23` |
-| `QUIET_HOUR_END` | Конец тихих часов (UTC) | `6` |
+| `QUIET_HOUR_START` | Начало тихих часов | `23` |
+| `QUIET_HOUR_END` | Конец тихих часов | `6` |
 | `LOG_LEVEL` | Уровень логов | `INFO` |
 | `DB_PATH` | Путь к SQLite базе | `data/bot.db` |
 
@@ -195,6 +201,7 @@ docker-compose logs -f
 | `/help` | Список команд |
 | `/status` | Активные задачи и ближайшие события |
 | `/load` | Нагрузка по дням на текущей неделе |
+| `/heatmap` | Тепловая карта расписания на неделю |
 | `/done Название` | Отметить задачу выполненной |
 | `/postpone Название время` | Отложить задачу |
 | `/upload` | Загрузить PDF с расписанием |
@@ -235,7 +242,7 @@ bot/
     ├── middleware/
     │   └── whitelist.py       # Фильтрация по ALLOWED_IDS
     ├── handlers/
-    │   ├── commands.py        # /start /help /status /load /done /postpone /clear
+    │   ├── commands.py        # /start /help /status /load /heatmap /done /postpone /clear
     │   ├── messages.py        # Текстовые сообщения → агент + inline подтверждения
     │   └── documents.py       # /upload — PDF и фото
     ├── services/
@@ -265,7 +272,7 @@ bot/
 
 **Ошибка Groq API**
 - Проверить `GROQ_API_KEY`
-- Убедиться что модель `llama-3.3-70b-versatile` доступна в аккаунте
+- Убедиться что модель `meta-llama/llama-4-maverick-17b-128e-instruct` доступна в аккаунте
 
 **token.json устарел**
 - Токен обновляется автоматически если есть `refresh_token`
