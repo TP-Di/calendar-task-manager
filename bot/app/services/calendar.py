@@ -196,9 +196,72 @@ async def create_event(
 
 
 async def bulk_create_events(events: list[dict]) -> list[dict]:
-    """Создаёт несколько событий за один вызов."""
-    results = []
+    """Создаёт несколько событий. Автоматически группирует еженедельные
+    повторения в одно recurring-событие с RRULE вместо N отдельных."""
+    from datetime import datetime as _dt
+
+    def _time_of_day(iso: str) -> str:
+        """Возвращает HH:MM из ISO-строки."""
+        try:
+            return iso.split("T")[1][:5]
+        except Exception:
+            return iso
+
+    # Если событие уже имеет recurrence — не трогаем
+    plain, with_rrule = [], []
     for ev in events:
+        if ev.get("recurrence"):
+            with_rrule.append(ev)
+        else:
+            plain.append(ev)
+
+    # Группируем plain-события по (title, start_time, end_time, description, tag)
+    groups: dict[tuple, list[dict]] = {}
+    for ev in plain:
+        key = (
+            ev["title"],
+            _time_of_day(ev["start"]),
+            _time_of_day(ev["end"]),
+            ev.get("description", ""),
+            ev.get("tag", ""),
+        )
+        groups.setdefault(key, []).append(ev)
+
+    collapsed: list[dict] = list(with_rrule)
+    for group in groups.values():
+        if len(group) < 2:
+            collapsed.extend(group)
+            continue
+
+        # Сортируем по дате начала
+        group.sort(key=lambda e: e["start"])
+
+        # Проверяем, все ли интервалы ровно 7 дней
+        all_weekly = True
+        for i in range(1, len(group)):
+            try:
+                d1 = _dt.fromisoformat(group[i - 1]["start"].replace("Z", "+00:00"))
+                d2 = _dt.fromisoformat(group[i]["start"].replace("Z", "+00:00"))
+                if (d2 - d1).days != 7:
+                    all_weekly = False
+                    break
+            except Exception:
+                all_weekly = False
+                break
+
+        if all_weekly:
+            first = dict(group[0])
+            first["recurrence"] = [f"RRULE:FREQ=WEEKLY;COUNT={len(group)}"]
+            logger.info(
+                "Авто-RRULE: '%s' ×%d → одно повторяющееся событие",
+                first["title"], len(group),
+            )
+            collapsed.append(first)
+        else:
+            collapsed.extend(group)
+
+    results = []
+    for ev in collapsed:
         result = await create_event(
             ev["title"],
             ev["start"],

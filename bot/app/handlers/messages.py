@@ -80,18 +80,33 @@ async def handle_agent_response(
 def _describe_bulk_create(events: list) -> str:
     """Формирует читаемое описание пачки событий для bulk_create_events."""
     from collections import defaultdict
+    from datetime import datetime as _dt
 
-    groups: dict[str, list[str]] = defaultdict(list)
+    def _time(iso: str) -> str:
+        try:
+            return iso.split("T")[1][:5]
+        except Exception:
+            return iso
+
+    groups: dict[tuple, list[dict]] = defaultdict(list)
     for ev in events:
-        groups[ev.get("title", "?")].append(ev.get("start", ""))
+        key = (ev.get("title", "?"), _time(ev.get("start", "")), _time(ev.get("end", "")))
+        groups[key].append(ev)
 
-    lines = [f"Создать *{len(events)} событий*:"]
-    for title, starts in groups.items():
-        starts_sorted = sorted(starts)
-        first = starts_sorted[0][:10] if starts_sorted else "?"
-        last = starts_sorted[-1][:10] if len(starts_sorted) > 1 else None
-        date_range = f"{first} – {last}" if last and last != first else first
-        lines.append(f"• *{title}* — {len(starts)} вхождений ({date_range})")
+    total_unique = len(groups)
+    lines = [f"Создать *{total_unique} уникальных слота* расписания:"]
+    for (title, t_start, t_end), group in groups.items():
+        starts = sorted(ev.get("start", "") for ev in group)
+        first_date = starts[0][:10] if starts else "?"
+        rrule = group[0].get("recurrence", [])
+        if rrule:
+            rule_str = rrule[0].replace("RRULE:", "")
+            lines.append(f"• *{title}* {t_start}–{t_end}, с {first_date} [{rule_str}]")
+        elif len(group) > 1:
+            last_date = starts[-1][:10]
+            lines.append(f"• *{title}* {t_start}–{t_end}, ×{len(group)} ({first_date} – {last_date})")
+        else:
+            lines.append(f"• *{title}* {t_start}–{t_end}, {first_date}")
     return "\n".join(lines)
 
 
