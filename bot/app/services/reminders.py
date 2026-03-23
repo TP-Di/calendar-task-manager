@@ -4,6 +4,7 @@
 """
 
 import logging
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
@@ -16,8 +17,12 @@ logger = logging.getLogger(__name__)
 
 
 def _is_quiet_hours() -> bool:
-    """Проверяет, находимся ли мы в тихих часах."""
-    now = datetime.now(timezone.utc)
+    """Проверяет, находимся ли мы в тихих часах (в локальной временной зоне)."""
+    try:
+        tz = zoneinfo.ZoneInfo(config.TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+    now = datetime.now(tz)
     hour = now.hour
     start = config.QUIET_HOUR_START
     end = config.QUIET_HOUR_END
