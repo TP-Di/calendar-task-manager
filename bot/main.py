@@ -5,7 +5,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -69,10 +69,13 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     )
 
     # Напоминания о дедлайнах (каждые N часов)
+    # next_run_time — откладываем первый запуск, чтобы рестарт контейнера
+    # не вызывал мгновенную отправку уведомлений
     scheduler.add_job(
         check_and_send_reminders,
         trigger="interval",
         hours=config.REMINDER_INTERVAL_HOURS,
+        next_run_time=datetime.now(timezone.utc) + timedelta(hours=config.REMINDER_INTERVAL_HOURS),
         args=[bot],
         id="deadline_reminders",
         replace_existing=True,
