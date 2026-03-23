@@ -164,8 +164,9 @@ async def create_event(
     end: str,
     description: str = "",
     tag: str = "",
+    recurrence: list[str] | None = None,
 ) -> dict:
-    """Создаёт событие в основном календаре."""
+    """Создаёт событие в основном календаре (поддерживает RRULE)."""
     import asyncio
 
     # Добавляем тег в описание
@@ -182,6 +183,8 @@ async def create_event(
                 "start": {"dateTime": start, "timeZone": config.TIMEZONE},
                 "end": {"dateTime": end, "timeZone": config.TIMEZONE},
             }
+            if recurrence:
+                body["recurrence"] = recurrence
             event = service.events().insert(calendarId="primary", body=body).execute()
             logger.info("Создано событие: %s (%s)", title, event.get("id"))
             return _format_event(event)
@@ -202,6 +205,7 @@ async def bulk_create_events(events: list[dict]) -> list[dict]:
             ev["end"],
             ev.get("description", ""),
             ev.get("tag", ""),
+            ev.get("recurrence"),
         )
         results.append(result)
     return results

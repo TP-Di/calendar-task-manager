@@ -72,6 +72,11 @@ TOOLS: list[dict] = [
                             "PRIORITY:курсы",
                         ],
                     },
+                    "recurrence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Правила повторения в формате RFC 5545, например ['RRULE:FREQ=WEEKLY;COUNT=9'] для 9 еженедельных повторений",
+                    },
                 },
                 "required": ["title", "start", "end"],
             },
@@ -123,6 +128,11 @@ TOOLS: list[dict] = [
                                         "PRIORITY:проекты",
                                         "PRIORITY:курсы",
                                     ],
+                                },
+                                "recurrence": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "Правила повторения RFC 5545, например ['RRULE:FREQ=WEEKLY;COUNT=9']",
                                 },
                             },
                             "required": ["title", "start", "end"],
