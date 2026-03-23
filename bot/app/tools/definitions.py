@@ -80,6 +80,62 @@ TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "bulk_create_events",
+            "description": (
+                "Создать несколько событий за раз. Используй когда пользователь даёт "
+                "недельное расписание или список занятий. "
+                "ВСЕГДА требует подтверждения пользователя перед выполнением."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "events": {
+                        "type": "array",
+                        "description": "Список событий для создания",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {
+                                    "type": "string",
+                                    "description": "Название события",
+                                },
+                                "start": {
+                                    "type": "string",
+                                    "description": "Начало ISO 8601, например '2026-03-24T09:30:00'",
+                                },
+                                "end": {
+                                    "type": "string",
+                                    "description": "Конец ISO 8601, например '2026-03-24T11:00:00'",
+                                },
+                                "description": {
+                                    "type": "string",
+                                    "description": "Описание (опционально)",
+                                },
+                                "tag": {
+                                    "type": "string",
+                                    "description": "Тег события",
+                                    "enum": [
+                                        "HARD",
+                                        "SOFT",
+                                        "PRIORITY:бакалавр",
+                                        "PRIORITY:работа",
+                                        "PRIORITY:магистратура",
+                                        "PRIORITY:проекты",
+                                        "PRIORITY:курсы",
+                                    ],
+                                },
+                            },
+                            "required": ["title", "start", "end"],
+                        },
+                    }
+                },
+                "required": ["events"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "update_event",
             "description": (
                 "Обновить или переместить существующее событие в Google Calendar. "
