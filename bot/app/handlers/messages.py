@@ -78,37 +78,40 @@ async def handle_agent_response(
 
 
 def _describe_bulk_create(events: list) -> str:
-    """Формирует читаемое описание пачки событий для bulk_create_events."""
-    from collections import defaultdict
-    from datetime import datetime as _dt
+    """Формирует читаемое описание пачки событий для bulk_create_events.
+    Каждое событие — отдельная строка (без группировки по времени),
+    чтобы события с одинаковым временем в разные дни не сливались."""
 
-    def _time(iso: str) -> str:
+    def _fmt_dt(iso: str) -> str:
+        """DD.MM HH:MM из ISO-строки."""
         try:
-            return iso.split("T")[1][:5]
+            parts = iso[:10].split("-")
+            return f"{parts[2]}.{parts[1]} {iso[11:16]}"
         except Exception:
-            return iso
+            return iso[:16]
 
-    groups: dict[tuple, list[dict]] = defaultdict(list)
+    total = len(events)
+    noun = "событие" if total == 1 else ("события" if total < 5 else "событий")
+    lines = [f"Создать *{total} {noun}* в Google Calendar:"]
+
     for ev in events:
-        key = (ev.get("title", "?"), _time(ev.get("start", "")), _time(ev.get("end", "")))
-        groups[key].append(ev)
+        title = ev.get("title", "?")
+        start = ev.get("start", "")
+        end = ev.get("end", "")
+        rrule = ev.get("recurrence", [])
+        reminder = ev.get("reminder_minutes")
+        desc = ev.get("description", "")
 
-    total_unique = len(groups)
-    lines = [f"Создать *{total_unique} уникальных слота* расписания:"]
-    for (title, t_start, t_end), group in groups.items():
-        starts = sorted(ev.get("start", "") for ev in group)
-        first_date = starts[0][:10] if starts else "?"
-        rrule = group[0].get("recurrence", [])
-        reminder = group[0].get("reminder_minutes")
+        end_time = end[11:16] if len(end) >= 16 else end
         reminder_str = f", 🔔{reminder}м" if reminder is not None else ""
+        desc_str = f", {desc}" if desc else ""
+
         if rrule:
             rule_str = rrule[0].replace("RRULE:", "")
-            lines.append(f"• *{title}* {t_start}–{t_end}, с {first_date} [{rule_str}]{reminder_str}")
-        elif len(group) > 1:
-            last_date = starts[-1][:10]
-            lines.append(f"• *{title}* {t_start}–{t_end}, ×{len(group)} ({first_date} – {last_date}){reminder_str}")
+            lines.append(f"• *{title}* с {_fmt_dt(start)} до {end_time} [{rule_str}]{desc_str}{reminder_str}")
         else:
-            lines.append(f"• *{title}* {t_start}–{t_end}, {first_date}{reminder_str}")
+            lines.append(f"• *{title}* {_fmt_dt(start)}–{end_time}{desc_str}{reminder_str}")
+
     return "\n".join(lines)
 
 
@@ -116,6 +119,30 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
     """Формирует читаемое описание предстоящего действия."""
     if tool_name == "bulk_create_events":
         return _describe_bulk_create(tool_args.get("events", []))
+
+    if tool_name == "update_event":
+        if tool_args.get("event_title"):
+            start_str = (
+                f" ({tool_args['event_start'][:16].replace('T', ' ')})"
+                if tool_args.get("event_start") else ""
+            )
+            return (
+                f"Обновить событие: *{tool_args['event_title']}*{start_str}\n"
+                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+            )
+        return (
+            f"Обновить событие ID: `{tool_args.get('event_id', '')}`\n"
+            f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+        )
+
+    if tool_name == "delete_event":
+        if tool_args.get("event_title"):
+            start_str = (
+                f" ({tool_args['event_start'][:16].replace('T', ' ')})"
+                if tool_args.get("event_start") else ""
+            )
+            return f"Удалить событие: *{tool_args['event_title']}*{start_str}"
+        return f"Удалить событие ID: `{tool_args.get('event_id', '')}`"
 
     descriptions = {
         "create_event": (
@@ -130,13 +157,6 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
             )
             + (f"\nНапоминание: за {tool_args['reminder_minutes']} мин" if tool_args.get("reminder_minutes") is not None else "")
             + (f"\nОписание: {tool_args.get('description', '')}" if tool_args.get("description") else "")
-        ),
-        "update_event": (
-            f"Обновить событие ID: `{tool_args.get('event_id', '')}`\n"
-            f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
-        ),
-        "delete_event": (
-            f"Удалить событие ID: `{tool_args.get('event_id', '')}`"
         ),
         "create_task": (
             f"Создать задачу: *{tool_args.get('title', '')}*"

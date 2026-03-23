@@ -332,11 +332,24 @@ async def delete_event(event_id: str) -> dict:
 
 
 def _to_utc_iso(dt_str: str) -> str:
-    """Приводит строку даты к формату UTC ISO 8601 с Z на конце."""
-    # Если уже заканчивается на Z или содержит +, возвращаем как есть
+    """
+    Приводит строку даты к формату UTC ISO 8601 с Z на конце.
+    Naive строки (без timezone) считаются локальным временем пользователя
+    (config.TIMEZONE) и конвертируются в UTC.
+    """
+    import zoneinfo
+    from datetime import datetime, timezone
+
+    # Уже содержит timezone — возвращаем как есть
     if dt_str.endswith("Z") or "+" in dt_str[10:]:
         return dt_str
-    # Добавляем Z если нет timezone info
+
     if len(dt_str) == 19:  # YYYY-MM-DDTHH:MM:SS
-        return dt_str + "Z"
+        try:
+            tz = zoneinfo.ZoneInfo(config.TIMEZONE)
+            local_dt = datetime.fromisoformat(dt_str).replace(tzinfo=tz)
+            return local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except Exception:
+            return dt_str + "Z"  # fallback: старое поведение
+
     return dt_str

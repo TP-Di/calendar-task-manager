@@ -45,11 +45,30 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 
 ## Работа с расписанием:
 - Когда пользователь присылает недельное расписание (дни недели → занятия/встречи), используй `bulk_create_events`.
-- Для повторяющихся событий ВСЕГДА используй поле `recurrence` с RRULE вместо создания N отдельных событий. Например: `"recurrence": ["RRULE:FREQ=WEEKLY;COUNT=9"]` для 9 еженедельных повторений. Дата `start` — первое вхождение.
-- Если задана конечная дата вместо количества: `"recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20260515T235959Z"]`.
+- Для повторяющихся событий ВСЕГДА используй поле `recurrence` с RRULE вместо создания N отдельных событий.
+- Дата `start` — ПЕРВОЕ вхождение события (дата ближайшего такого дня недели от начала расписания).
+- COUNT=N означает N ВСЕГО вхождений, считая первое. `"RRULE:FREQ=WEEKLY;COUNT=9"` — 9 занятий суммарно.
 - Каждый уникальный день/время — одно событие с recurrence. Не дублируй события отдельными записями на каждую неделю.
-- Для университетских занятий ставь тег PRIORITY:бакалавр и добавляй аудиторию в description.
+- Для университетских занятий ставь tag="PRIORITY:бакалавр", reminder_minutes=30, аудиторию в description.
 - Не жди команд — понимай намерение из контекста. Фразы "добавь это", "перенеси X на час позже", "удали все пятничные занятия" — выполняй через нужный tool без лишних уточнений.
+
+## Формат расписания:
+- Строки вида `ПРЕДМЕТ АУДИТОРИЯ ЧЧ:ММ - ЧЧ:ММ`, например `CD B101 9:30 - 11:00`:
+  - ПРЕДМЕТ (первый токен: CD, MA, IoT, EE…) → поле `title`
+  - АУДИТОРИЯ (второй токен: B101, B209…) → поле `description`
+  - Время → поля `start`/`end` (ISO 8601 с датой соответствующего дня недели)
+- MON=понедельник, TUE=вторник, WED=среда, THU=четверг, FRI=пятница
+- Несколько занятий через запятую в одной строке — создавай отдельное событие на каждое
+
+## Формат RRULE:
+- UNTIL в компактном формате БЕЗ дефисов и двоеточий, с суффиксом Z: `UNTIL=20260515T235959Z`
+- НЕПРАВИЛЬНО: `UNTIL=2026-05-15T23:59:59` — дефисы и двоеточия запрещены в RRULE UNTIL
+- ПРАВИЛЬНО: `UNTIL=20260515T235959Z`
+
+## При вызове update_event и delete_event:
+- После get_events у тебя есть название и время события
+- ВСЕГДА передавай `event_title` и `event_start` в вызов update_event / delete_event
+- Пример: `{{"event_id": "abc123", "event_title": "CD", "event_start": "2026-03-23T09:30:00+05:00", "fields": {{...}}}}`
 
 ## Формат ответа:
 - Для любых изменений (добавить/удалить/изменить) — ТОЛЬКО вызов tool, никакого текстового описания.
@@ -198,6 +217,26 @@ async def run_agent(user_id: int, user_message: str) -> str:
             # Если инструмент требует подтверждения — прерываем цикл
             # и возвращаем маркер для обработки в handler
             if tool_name in CONFIRMATION_REQUIRED_TOOLS:
+                # Защита: update_event/delete_event без event_id → форсируем get_events
+                if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
+                    logger.warning(
+                        "%s вызван без event_id, добавляем ошибку и повторяем итерацию",
+                        tool_name,
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({
+                            "error": (
+                                f"event_id отсутствует. "
+                                "Сначала вызови get_events чтобы найти нужное событие, "
+                                "возьми его id из результата и передай в "
+                                f"{tool_name}."
+                            )
+                        }, ensure_ascii=False),
+                    })
+                    break  # Выходим из inner for-loop, outer for-loop сделает retry
+
                 pending = {
                     "tool_name": tool_name,
                     "tool_args": tool_args,
@@ -290,6 +329,12 @@ async def execute_pending_tool(pending_data: dict) -> str:
     tool_name = pending_data["tool_name"]
     tool_args = pending_data["tool_args"]
     user_id = pending_data["user_id"]
+
+    # Последняя линия защиты: не выполнять update/delete с пустым event_id
+    if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
+        error_text = "❌ event_id пустой — повторите запрос, я запрошу события автоматически."
+        await add_message(user_id, "assistant", error_text)
+        return error_text
 
     if tool_name in _TOOL_DISPATCH:
         try:

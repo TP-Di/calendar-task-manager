@@ -167,6 +167,14 @@ TOOLS: list[dict] = [
                         "type": "string",
                         "description": "ID события из Google Calendar",
                     },
+                    "event_title": {
+                        "type": "string",
+                        "description": "Название события (из предыдущего get_events) — только для отображения в диалоге подтверждения.",
+                    },
+                    "event_start": {
+                        "type": "string",
+                        "description": "Дата/время начала события ISO 8601 (из предыдущего get_events) — только для отображения в диалоге подтверждения.",
+                    },
                     "fields": {
                         "type": "object",
                         "description": "Поля для обновления: title, start, end, description",
@@ -197,6 +205,14 @@ TOOLS: list[dict] = [
                     "event_id": {
                         "type": "string",
                         "description": "ID события из Google Calendar",
+                    },
+                    "event_title": {
+                        "type": "string",
+                        "description": "Название события (из предыдущего get_events) — только для отображения в диалоге подтверждения.",
+                    },
+                    "event_start": {
+                        "type": "string",
+                        "description": "Дата/время начала события ISO 8601 (из предыдущего get_events) — только для отображения в диалоге подтверждения.",
                     },
                 },
                 "required": ["event_id"],
