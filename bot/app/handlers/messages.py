@@ -241,6 +241,10 @@ async def handle_text_message(message: Message) -> None:
     if not user_text:
         return
 
+    # Если было ожидающее подтверждение — отменяем, чтобы не мешалось
+    if user_id in _pending_confirmations:
+        _pending_confirmations.pop(user_id)
+
     # Показываем индикатор обработки
     thinking_msg = await message.answer("🤔 Думаю...")
 
