@@ -20,6 +20,14 @@ logger = logging.getLogger(__name__)
 # ID стандартного списка задач
 _DEFAULT_TASKLIST = "@default"
 
+# Поля, разрешённые в теле update-запроса (остальные — read-only)
+_WRITABLE_FIELDS = {"id", "title", "status", "due", "notes", "completed", "parent", "position"}
+
+
+def _clean_task_body(task: dict) -> dict:
+    """Убирает read-only поля из тела задачи перед отправкой update."""
+    return {k: v for k, v in task.items() if k in _WRITABLE_FIELDS}
+
 
 def _build_tasks_service():
     """Создаёт сервис Google Tasks."""
@@ -118,7 +126,7 @@ async def complete_task(task_id: str) -> dict:
             task["status"] = "completed"
             updated = (
                 service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=task)
+                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
                 .execute()
             )
             logger.info("Задача выполнена: %s", task_id)
@@ -195,7 +203,7 @@ async def update_task(task_id: str, fields: dict) -> dict:
 
             updated = (
                 service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=task)
+                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
                 .execute()
             )
             logger.info("Обновлена задача: %s", task_id)
