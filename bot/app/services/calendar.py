@@ -192,6 +192,21 @@ async def create_event(
     return await asyncio.to_thread(_create)
 
 
+async def bulk_create_events(events: list[dict]) -> list[dict]:
+    """Создаёт несколько событий за один вызов."""
+    results = []
+    for ev in events:
+        result = await create_event(
+            ev["title"],
+            ev["start"],
+            ev["end"],
+            ev.get("description", ""),
+            ev.get("tag", ""),
+        )
+        results.append(result)
+    return results
+
+
 async def update_event(event_id: str, fields: dict) -> dict:
     """Обновляет поля существующего события."""
     import asyncio

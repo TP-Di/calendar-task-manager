@@ -77,8 +77,29 @@ async def handle_agent_response(
             await message.answer(response, parse_mode=None)
 
 
+def _describe_bulk_create(events: list) -> str:
+    """Формирует читаемое описание пачки событий для bulk_create_events."""
+    from collections import defaultdict
+
+    groups: dict[str, list[str]] = defaultdict(list)
+    for ev in events:
+        groups[ev.get("title", "?")].append(ev.get("start", ""))
+
+    lines = [f"Создать *{len(events)} событий*:"]
+    for title, starts in groups.items():
+        starts_sorted = sorted(starts)
+        first = starts_sorted[0][:10] if starts_sorted else "?"
+        last = starts_sorted[-1][:10] if len(starts_sorted) > 1 else None
+        date_range = f"{first} – {last}" if last and last != first else first
+        lines.append(f"• *{title}* — {len(starts)} вхождений ({date_range})")
+    return "\n".join(lines)
+
+
 def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
     """Формирует читаемое описание предстоящего действия."""
+    if tool_name == "bulk_create_events":
+        return _describe_bulk_create(tool_args.get("events", []))
+
     descriptions = {
         "create_event": (
             f"Создать событие: *{tool_args.get('title', '')}*\n"

@@ -41,6 +41,12 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 5. Отвечай кратко и по делу.
 6. Текущее время UTC: {current_time}
 
+## Работа с расписанием:
+- Когда пользователь присылает недельное расписание (дни недели → занятия/встречи), используй `bulk_create_events`.
+- Самостоятельно рассчитай конкретные ISO-даты: найди ближайший нужный день недели от текущей даты, затем повторяй с шагом 7 дней до указанной конечной даты.
+- Для университетских занятий ставь тег PRIORITY:бакалавр и добавляй аудиторию в description.
+- Не жди команд — понимай намерение из контекста. Фразы "добавь это", "перенеси X на час позже", "удали все пятничные занятия" — выполняй через нужный tool без лишних уточнений.
+
 ## Формат ответа:
 - При предложении изменений используй чёткий список: что/когда/куда
 - Для подтверждения добавляй в конце: "Подтвердить? (Да/Нет)"
@@ -66,6 +72,7 @@ _TOOL_DISPATCH = {
     ),
     "update_event": lambda args: cal.update_event(args["event_id"], args["fields"]),
     "delete_event": lambda args: cal.delete_event(args["event_id"]),
+    "bulk_create_events": lambda args: cal.bulk_create_events(args["events"]),
     "get_tasks": lambda args: tasks_svc.get_tasks(),
     "create_task": lambda args: tasks_svc.create_task(
         args["title"],
@@ -79,6 +86,7 @@ _TOOL_DISPATCH = {
 # Инструменты которые ТРЕБУЮТ подтверждения (вызывающий код должен проверять)
 CONFIRMATION_REQUIRED_TOOLS = {
     "create_event",
+    "bulk_create_events",
     "update_event",
     "delete_event",
     "create_task",
@@ -117,7 +125,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
-                max_tokens=2048,
+                max_tokens=4096,
                 temperature=0.3,
             )
         except Exception as e:
@@ -245,7 +253,7 @@ async def execute_pending_tool(pending_data: dict) -> str:
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
-                max_tokens=2048,
+                max_tokens=4096,
                 temperature=0.3,
             )
         except Exception as e:
