@@ -70,6 +70,18 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 - ВСЕГДА передавай `event_title` и `event_start` в вызов update_event / delete_event
 - Пример: `{{"event_id": "abc123", "event_title": "CD", "event_start": "2026-03-23T09:30:00+05:00", "fields": {{...}}}}`
 
+## При вызове complete_task, delete_task и update_task:
+- После get_tasks у тебя есть название задачи
+- ВСЕГДА передавай `task_title` в вызов complete_task / delete_task / update_task
+- Пример: `{{"task_id": "abc123", "task_title": "Изучить Airflow"}}`
+
+## Планирование задач по времени:
+- Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем создай события-блоки через create_event или bulk_create_events.
+- "Свободное время до 19:30" = нет событий в этот период. Заполни максимально доступные слоты нужным количеством часов.
+- Если задача не вмещается полностью — создай несколько событий-блоков.
+- При просьбе "сократить задачу на X часов" → update_event, уменьши end на X часов.
+- При просьбе "создать такую же на оставшееся время" → get_events для поиска следующего свободного слота, create_event.
+
 ## Формат ответа:
 - Для любых изменений (добавить/удалить/изменить) — ТОЛЬКО вызов tool, никакого текстового описания.
 - Никогда не пиши "Мероприятия добавлены" или список дат — это делает система после реального вызова tool.
@@ -110,6 +122,7 @@ _TOOL_DISPATCH = {
         args.get("description", ""),
     ),
     "complete_task": lambda args: tasks_svc.complete_task(args["task_id"]),
+    "delete_task": lambda args: tasks_svc.delete_task(args["task_id"]),
     "update_task": lambda args: tasks_svc.update_task(args["task_id"], args["fields"]),
 }
 
@@ -121,6 +134,7 @@ CONFIRMATION_REQUIRED_TOOLS = {
     "delete_event",
     "create_task",
     "complete_task",
+    "delete_task",
     "update_task",
 }
 
@@ -237,6 +251,26 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     })
                     break  # Выходим из inner for-loop, outer for-loop сделает retry
 
+                # Защита: complete/delete/update_task без task_id → форсируем get_tasks
+                if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
+                    logger.warning(
+                        "%s вызван без task_id, добавляем ошибку и повторяем итерацию",
+                        tool_name,
+                    )
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps({
+                            "error": (
+                                f"task_id отсутствует. "
+                                "Сначала вызови get_tasks чтобы найти нужную задачу, "
+                                "возьми её id из результата и передай в "
+                                f"{tool_name}."
+                            )
+                        }, ensure_ascii=False),
+                    })
+                    break
+
                 pending = {
                     "tool_name": tool_name,
                     "tool_args": tool_args,
@@ -315,6 +349,9 @@ def _format_tool_success(tool_name: str, result) -> str:
     if tool_name == "complete_task":
         return "✅ Задача отмечена выполненной."
 
+    if tool_name == "delete_task":
+        return "✅ Задача удалена."
+
     if tool_name == "update_task":
         return "✅ Задача обновлена."
 
@@ -330,9 +367,14 @@ async def execute_pending_tool(pending_data: dict) -> str:
     tool_args = pending_data["tool_args"]
     user_id = pending_data["user_id"]
 
-    # Последняя линия защиты: не выполнять update/delete с пустым event_id
+    # Последняя линия защиты: не выполнять update/delete с пустым ID
     if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
         error_text = "❌ event_id пустой — повторите запрос, я запрошу события автоматически."
+        await add_message(user_id, "assistant", error_text)
+        return error_text
+
+    if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
+        error_text = "❌ task_id пустой — повторите запрос, я запрошу задачи автоматически."
         await add_message(user_id, "assistant", error_text)
         return error_text
 

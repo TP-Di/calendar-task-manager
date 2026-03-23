@@ -119,6 +119,22 @@ async def complete_task(task_id: str) -> dict:
     return await asyncio.to_thread(_complete)
 
 
+async def delete_task(task_id: str) -> dict:
+    """Удаляет задачу из Google Tasks."""
+
+    def _delete():
+        try:
+            service = _build_tasks_service()
+            service.tasks().delete(tasklist=_DEFAULT_TASKLIST, task=task_id).execute()
+            logger.info("Удалена задача: %s", task_id)
+            return {"status": "deleted", "task_id": task_id}
+        except HttpError as e:
+            logger.error("Ошибка Tasks API (delete_task): %s", e)
+            raise
+
+    return await asyncio.to_thread(_delete)
+
+
 async def update_task(task_id: str, fields: dict) -> dict:
     """Обновляет поля задачи."""
 

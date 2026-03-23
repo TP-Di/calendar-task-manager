@@ -163,11 +163,25 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
             + (f"\nДедлайн: {tool_args.get('due', '')}" if tool_args.get("due") else "")
         ),
         "complete_task": (
+            f"Отметить выполненной: *{tool_args['task_title']}*"
+            if tool_args.get("task_title") else
             f"Отметить задачу выполненной ID: `{tool_args.get('task_id', '')}`"
         ),
+        "delete_task": (
+            f"Удалить задачу: *{tool_args['task_title']}*"
+            if tool_args.get("task_title") else
+            f"Удалить задачу ID: `{tool_args.get('task_id', '')}`"
+        ),
         "update_task": (
-            f"Обновить задачу ID: `{tool_args.get('task_id', '')}`\n"
-            f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+            (
+                f"Обновить задачу: *{tool_args['task_title']}*\n"
+                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+            )
+            if tool_args.get("task_title") else
+            (
+                f"Обновить задачу ID: `{tool_args.get('task_id', '')}`\n"
+                f"Изменения: {json.dumps(tool_args.get('fields', {}), ensure_ascii=False)}"
+            )
         ),
     }
     return descriptions.get(tool_name, f"Выполнить: {tool_name}({tool_args})")

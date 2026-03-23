@@ -277,6 +277,34 @@ TOOLS: list[dict] = [
                         "type": "string",
                         "description": "ID задачи из Google Tasks",
                     },
+                    "task_title": {
+                        "type": "string",
+                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
+                    },
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "delete_task",
+            "description": (
+                "Удалить задачу из Google Tasks. "
+                "ВСЕГДА требует подтверждения пользователя перед выполнением."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID задачи из Google Tasks",
+                    },
+                    "task_title": {
+                        "type": "string",
+                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
+                    },
                 },
                 "required": ["task_id"],
             },
@@ -296,6 +324,10 @@ TOOLS: list[dict] = [
                     "task_id": {
                         "type": "string",
                         "description": "ID задачи из Google Tasks",
+                    },
+                    "task_title": {
+                        "type": "string",
+                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
                     },
                     "fields": {
                         "type": "object",
