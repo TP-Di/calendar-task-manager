@@ -182,13 +182,16 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
         return "\n".join(lines)
 
     if tool_name == "create_task":
-        lines = [f"Создать задачу: *{tool_args.get('title', '')}*"]
+        title = tool_args.get("title", "")
+        lines = [f"Создать задачу: *{title}*"]
         if tool_args.get("start_time"):
             end_t = tool_args.get("end_time", "")
             sep = f" – {_fmt_iso(end_t)}" if end_t else ""
-            lines.append(f"Время: {_fmt_iso(tool_args['start_time'])}{sep}")
+            lines.append(f"📅 Блок в календаре: {_fmt_iso(tool_args['start_time'])}{sep}")
         if tool_args.get("due"):
-            lines.append(f"Дедлайн: {_fmt_iso(tool_args['due'])}")
+            lines.append(f"✅ Дедлайн: {_fmt_iso(tool_args['due'])}")
+        elif not tool_args.get("start_time"):
+            pass  # нет ни времени ни дедлайна — ок
         if tool_args.get("description"):
             lines.append(f"Описание: {tool_args['description']}")
         return "\n".join(lines)

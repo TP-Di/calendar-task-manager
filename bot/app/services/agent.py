@@ -76,11 +76,12 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 - Пример: `{{"task_id": "abc123", "task_title": "Изучить Airflow"}}`
 
 ## Планирование задач по времени:
-- Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем создай задачу через create_task с полями start_time и end_time.
-- "Свободное время до 19:30" = нет событий в этот период. Заполни доступные часы: start_time = конец последнего события (или текущее время), end_time = 19:30 (или start + нужное кол-во часов, но не позже лимита).
-- Если задача не вмещается — создай несколько задач-блоков.
-- При просьбе "сократить задачу на X часов" → update_task, уменьши end_time.
-- При просьбе "создать такую же на оставшееся время" → get_events для поиска следующего свободного слота, create_task.
+- Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем вызови create_task с полями start_time и end_time.
+- Если start_time + end_time указаны, система автоматически создаст и блок в Google Calendar (📋 событие с тегом SOFT), и задачу в Google Tasks.
+- "Свободное время до 19:30" = нет событий в этот период. start_time = конец последнего события (или сейчас), end_time = min(start + нужные часы, 19:30).
+- Если задача не вмещается — создай несколько задач-блоков (несколько вызовов create_task).
+- При просьбе "сократить задачу на X часов" → update_task с новым end_time в fields.
+- При просьбе "создать такую же на оставшееся время" → get_events, create_task с новым слотом.
 
 ## Дедлайн (due) задачи:
 - Если пользователь не упомянул срок сдачи — ставь due = конец текущего дня (HH:MM:SS = 23:59:59).
@@ -105,6 +106,32 @@ def _get_system_prompt() -> str:
     return SYSTEM_PROMPT.format(current_time=now, timezone=config.TIMEZONE)
 
 
+async def _create_task_dispatch(args: dict) -> dict:
+    """
+    Если переданы start_time + end_time — создаёт календарный блок (📋 событие SOFT)
+    И параллельно задачу в Google Tasks с дедлайном.
+    Если только due — создаёт только задачу.
+    """
+    results: dict = {}
+    if args.get("start_time") and args.get("end_time"):
+        event = await cal.create_event(
+            title=f"📋 {args['title']}",
+            start=args["start_time"],
+            end=args["end_time"],
+            tag="SOFT",
+            description=args.get("description", ""),
+        )
+        results["event"] = event
+
+    task = await tasks_svc.create_task(
+        args["title"],
+        args.get("due", ""),
+        args.get("description", ""),
+    )
+    results["task"] = task
+    return results
+
+
 # Диспетчер: имя_tool → функция
 _TOOL_DISPATCH = {
     "get_events": lambda args: cal.get_events(args["date_from"], args["date_to"]),
@@ -121,13 +148,7 @@ _TOOL_DISPATCH = {
     "delete_event": lambda args: cal.delete_event(args["event_id"]),
     "bulk_create_events": lambda args: cal.bulk_create_events(args["events"]),
     "get_tasks": lambda args: tasks_svc.get_tasks(),
-    "create_task": lambda args: tasks_svc.create_task(
-        args["title"],
-        args.get("due", ""),
-        args.get("description", ""),
-        args.get("start_time", ""),
-        args.get("end_time", ""),
-    ),
+    "create_task": _create_task_dispatch,
     "complete_task": lambda args: tasks_svc.complete_task(args["task_id"]),
     "delete_task": lambda args: tasks_svc.delete_task(args["task_id"]),
     "update_task": lambda args: tasks_svc.update_task(args["task_id"], args["fields"]),
@@ -350,8 +371,15 @@ def _format_tool_success(tool_name: str, result) -> str:
         return f"✅ Событие обновлено: *{title}*"
 
     if tool_name == "create_task":
-        t = result if isinstance(result, dict) else {}
-        return f"✅ Задача создана: *{t.get('title', '')}*"
+        r = result if isinstance(result, dict) else {}
+        task = r.get("task", r)  # backwards compat if no event
+        title = task.get("title", "")
+        if r.get("event"):
+            ev = r["event"]
+            start = ev.get("start", "")[:16].replace("T", " ")
+            end = ev.get("end", "")[:16].replace("T", " ")
+            return f"✅ Задача создана: *{title}*\n✅ Блок в календаре: {start} – {end[11:]}"
+        return f"✅ Задача создана: *{title}*"
 
     if tool_name == "complete_task":
         return "✅ Задача отмечена выполненной."
