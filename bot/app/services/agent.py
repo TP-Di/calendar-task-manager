@@ -78,6 +78,7 @@ _TOOL_DISPATCH = {
         args.get("description", ""),
         args.get("tag", ""),
         args.get("recurrence"),
+        args.get("reminder_minutes"),
     ),
     "update_event": lambda args: cal.update_event(args["event_id"], args["fields"]),
     "delete_event": lambda args: cal.delete_event(args["event_id"]),
@@ -227,105 +228,67 @@ async def run_agent(user_id: int, user_message: str) -> str:
     return fallback
 
 
+def _format_tool_success(tool_name: str, result) -> str:
+    """Формирует читаемое сообщение об успешном выполнении tool."""
+    if tool_name == "bulk_create_events":
+        count = len(result) if isinstance(result, list) else 1
+        noun = "событие" if count == 1 else ("события" if count < 5 else "событий")
+        lines = [f"✅ Создано {count} {noun} в Google Calendar:"]
+        for ev in (result if isinstance(result, list) else [result]):
+            title = ev.get("title", "")
+            start = ev.get("start", "")[:16].replace("T", " ") if ev.get("start") else ""
+            lines.append(f"• *{title}* — {start}")
+        return "\n".join(lines)
+
+    if tool_name == "create_event":
+        ev = result if isinstance(result, dict) else {}
+        title = ev.get("title", "")
+        start = ev.get("start", "")[:16].replace("T", " ") if ev.get("start") else ""
+        return f"✅ Создано: *{title}* — {start}"
+
+    if tool_name == "delete_event":
+        return "✅ Событие удалено."
+
+    if tool_name == "update_event":
+        ev = result if isinstance(result, dict) else {}
+        title = ev.get("title", "")
+        return f"✅ Событие обновлено: *{title}*"
+
+    if tool_name == "create_task":
+        t = result if isinstance(result, dict) else {}
+        return f"✅ Задача создана: *{t.get('title', '')}*"
+
+    if tool_name == "complete_task":
+        return "✅ Задача отмечена выполненной."
+
+    if tool_name == "update_task":
+        return "✅ Задача обновлена."
+
+    return "✅ Действие выполнено."
+
+
 async def execute_pending_tool(pending_data: dict) -> str:
     """
     Выполняет отложенный tool call после подтверждения пользователем.
-    Продолжает tool calling loop.
+    Возвращает форматированный результат без лишнего вызова LLM.
     """
-    client = AsyncGroq(api_key=config.GROQ_API_KEY)
-
     tool_name = pending_data["tool_name"]
     tool_args = pending_data["tool_args"]
-    tool_call_id = pending_data["tool_call_id"]
-    messages = pending_data["messages"]
     user_id = pending_data["user_id"]
 
-    # Выполняем tool
     if tool_name in _TOOL_DISPATCH:
         try:
             result = await _TOOL_DISPATCH[tool_name](tool_args)
-            tool_result_str = json.dumps(result, ensure_ascii=False, default=str)
         except Exception as e:
             logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
-            tool_result_str = json.dumps({"error": str(e)}, ensure_ascii=False)
+            error_text = f"❌ Ошибка при выполнении: {e}"
+            await add_message(user_id, "assistant", error_text)
+            return error_text
     else:
-        tool_result_str = json.dumps(
-            {"error": f"Неизвестный инструмент: {tool_name}"}, ensure_ascii=False
-        )
+        error_text = f"❌ Неизвестный инструмент: {tool_name}"
+        await add_message(user_id, "assistant", error_text)
+        return error_text
 
-    messages.append(
-        {
-            "role": "tool",
-            "tool_call_id": tool_call_id,
-            "content": tool_result_str,
-        }
-    )
-
-    # Продолжаем цикл для финального ответа
-    for _ in range(3):
-        try:
-            response = await client.chat.completions.create(
-                model=config.GROQ_MODEL,
-                messages=messages,
-                tools=TOOLS,
-                tool_choice="auto",
-                max_tokens=4096,
-                temperature=0.3,
-            )
-        except Exception as e:
-            logger.error("Ошибка Groq API (после подтверждения): %s", e)
-            return f"Ошибка AI после выполнения действия: {e}"
-
-        choice = response.choices[0]
-        message = choice.message
-
-        if not message.tool_calls:
-            final_text = message.content or "(действие выполнено)"
-            await add_message(user_id, "assistant", final_text)
-            return final_text
-
-        # Ещё tool calls — обрабатываем (только read-only на этом этапе)
-        messages.append(
-            {
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments,
-                        },
-                    }
-                    for tc in message.tool_calls
-                ],
-            }
-        )
-
-        for tool_call in message.tool_calls:
-            t_name = tool_call.function.name
-            try:
-                t_args = json.loads(tool_call.function.arguments)
-            except json.JSONDecodeError:
-                t_args = {}
-
-            if t_name in _TOOL_DISPATCH and t_name not in CONFIRMATION_REQUIRED_TOOLS:
-                try:
-                    res = await _TOOL_DISPATCH[t_name](t_args)
-                    res_str = json.dumps(res, ensure_ascii=False, default=str)
-                except Exception as e:
-                    res_str = json.dumps({"error": str(e)}, ensure_ascii=False)
-            else:
-                res_str = json.dumps(
-                    {"error": "Требуется подтверждение для " + t_name},
-                    ensure_ascii=False,
-                )
-
-            messages.append(
-                {"role": "tool", "tool_call_id": tool_call.id, "content": res_str}
-            )
-
-    fallback = "Действие выполнено."
-    await add_message(user_id, "assistant", fallback)
-    return fallback
+    final_text = _format_tool_success(tool_name, result)
+    await add_message(user_id, "assistant", final_text)
+    return final_text
