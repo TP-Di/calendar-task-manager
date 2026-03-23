@@ -63,11 +63,17 @@ async def handle_agent_response(
         tool_args = pending.get("tool_args", {})
         description = _describe_tool_action(tool_name, tool_args)
 
-        await message.answer(
-            f"🔔 *Подтверждение действия:*\n\n{description}\n\nВыполнить?",
-            parse_mode="Markdown",
-            reply_markup=_make_confirm_keyboard(description),
-        )
+        try:
+            await message.answer(
+                f"🔔 *Подтверждение действия:*\n\n{description}\n\nВыполнить?",
+                parse_mode="Markdown",
+                reply_markup=_make_confirm_keyboard(description),
+            )
+        except Exception:
+            await message.answer(
+                f"🔔 Подтверждение действия:\n\n{description}\n\nВыполнить?",
+                reply_markup=_make_confirm_keyboard(description),
+            )
     else:
         # Обычный ответ агента
         try:
@@ -107,8 +113,9 @@ def _describe_bulk_create(events: list) -> str:
         desc_str = f", {desc}" if desc else ""
 
         if rrule:
+            # Используем () вместо [] чтобы не конфликтовать с Markdown-ссылками
             rule_str = rrule[0].replace("RRULE:", "")
-            lines.append(f"• *{title}* с {_fmt_dt(start)} до {end_time} [{rule_str}]{desc_str}{reminder_str}")
+            lines.append(f"• *{title}* с {_fmt_dt(start)} до {end_time} ({rule_str}){desc_str}{reminder_str}")
         else:
             lines.append(f"• *{title}* {_fmt_dt(start)}–{end_time}{desc_str}{reminder_str}")
 
@@ -152,7 +159,7 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
 
     if tool_name == "update_event":
         fields = tool_args.get("fields", {})
-        name = tool_args.get("event_title") or f"ID `{tool_args.get('event_id', '')}`"
+        name = tool_args.get("event_title") or tool_args.get("event_id", "")
         orig = (
             f" ({_fmt_iso(tool_args['event_start'])})"
             if tool_args.get("event_start") else ""
@@ -160,7 +167,7 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
         return f"Обновить событие: *{name}*{orig}\n{_fmt_fields(fields)}"
 
     if tool_name == "delete_event":
-        name = tool_args.get("event_title") or f"ID `{tool_args.get('event_id', '')}`"
+        name = tool_args.get("event_title") or tool_args.get("event_id", "")
         orig = (
             f" ({_fmt_iso(tool_args['event_start'])})"
             if tool_args.get("event_start") else ""
@@ -197,12 +204,12 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
         return "\n".join(lines)
 
     if tool_name in ("complete_task", "delete_task"):
-        name = tool_args.get("task_title") or f"ID `{tool_args.get('task_id', '')}`"
+        name = tool_args.get("task_title") or tool_args.get("task_id", "")
         verb = "Отметить выполненной" if tool_name == "complete_task" else "Удалить задачу"
         return f"{verb}: *{name}*"
 
     if tool_name == "update_task":
-        name = tool_args.get("task_title") or f"ID `{tool_args.get('task_id', '')}`"
+        name = tool_args.get("task_title") or tool_args.get("task_id", "")
         fields = tool_args.get("fields", {})
         return f"Обновить задачу: *{name}*\n{_fmt_fields(fields)}"
 
@@ -220,11 +227,13 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
     if answer == "no":
         # Удаляем pending и отменяем
         _pending_confirmations.pop(user_id, None)
-        await callback.message.edit_text(
-            callback.message.text + "\n\n❌ *Отменено.*",
-            parse_mode="Markdown",
-            reply_markup=None,
-        )
+        try:
+            await callback.message.edit_text(
+                callback.message.text + "\n\n❌ Отменено.",
+                reply_markup=None,
+            )
+        except Exception:
+            pass
         return
 
     # Подтверждено — выполняем
@@ -236,11 +245,13 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
         )
         return
 
-    await callback.message.edit_text(
-        callback.message.text + "\n\n⏳ *Выполняю...*",
-        parse_mode="Markdown",
-        reply_markup=None,
-    )
+    try:
+        await callback.message.edit_text(
+            callback.message.text + "\n\n⏳ Выполняю...",
+            reply_markup=None,
+        )
+    except Exception:
+        pass
 
     try:
         result = await execute_pending_tool(pending)
