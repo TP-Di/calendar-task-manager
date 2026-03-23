@@ -189,6 +189,13 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     "messages": messages,
                     "user_id": user_id,
                 }
+                # Сохраняем placeholder в историю, чтобы следующий вызов LLM
+                # не видел незакрытый запрос без ответа ассистента
+                await add_message(
+                    user_id,
+                    "assistant",
+                    f"[Ожидаю подтверждения действия: {tool_name}]",
+                )
                 return f"PENDING_TOOL::{json.dumps(pending, ensure_ascii=False)}"
 
             # Выполняем read-only tool
