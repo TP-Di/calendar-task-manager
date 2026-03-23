@@ -249,9 +249,17 @@ TOOLS: list[dict] = [
                         "type": "string",
                         "description": "Название задачи",
                     },
+                    "start_time": {
+                        "type": "string",
+                        "description": "Время начала работы над задачей ISO 8601, например '2026-03-24T13:30:00'. Используй когда нужно заблокировать время в расписании.",
+                    },
+                    "end_time": {
+                        "type": "string",
+                        "description": "Время окончания работы над задачей ISO 8601. Обязательно если указан start_time.",
+                    },
                     "due": {
                         "type": "string",
-                        "description": "Дедлайн в формате ISO 8601, например '2024-01-20T23:59:59'",
+                        "description": "Срок сдачи/дедлайн в формате ISO 8601, например '2024-01-20T23:59:59'. Если пользователь не упомянул дедлайн — используй конец текущего дня. Если явно сказал что дедлайна нет — не передавай это поле.",
                     },
                     "description": {
                         "type": "string",
@@ -331,11 +339,13 @@ TOOLS: list[dict] = [
                     },
                     "fields": {
                         "type": "object",
-                        "description": "Поля для обновления: title, due, description",
+                        "description": "Поля для обновления: title, due, description, start_time, end_time",
                         "properties": {
                             "title": {"type": "string"},
                             "due": {"type": "string"},
                             "description": {"type": "string"},
+                            "start_time": {"type": "string"},
+                            "end_time": {"type": "string"},
                         },
                     },
                 },

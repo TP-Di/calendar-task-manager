@@ -65,18 +65,29 @@ async def get_tasks() -> list[dict]:
 
 
 async def create_task(
-    title: str, due: str = "", description: str = ""
+    title: str, due: str = "", description: str = "",
+    start_time: str = "", end_time: str = "",
 ) -> dict:
-    """Создаёт задачу в Google Tasks."""
+    """Создаёт задачу в Google Tasks. start_time/end_time хранятся в notes."""
 
     def _create():
         try:
             service = _build_tasks_service()
             body: dict[str, Any] = {"title": title}
+
+            # Собираем notes: сначала блок времени (если есть), затем описание
+            notes_parts = []
+            if start_time:
+                block = f"⏰ {start_time}"
+                if end_time:
+                    block += f" – {end_time}"
+                notes_parts.append(block)
             if description:
-                body["notes"] = description
+                notes_parts.append(description)
+            if notes_parts:
+                body["notes"] = "\n".join(notes_parts)
+
             if due:
-                # Google Tasks ожидает RFC 3339
                 body["due"] = due if due.endswith("Z") else due + "Z"
 
             task = (
@@ -148,11 +159,39 @@ async def update_task(task_id: str, fields: dict) -> dict:
             )
             if "title" in fields:
                 task["title"] = fields["title"]
-            if "description" in fields:
-                task["notes"] = fields["description"]
             if "due" in fields:
                 due = fields["due"]
                 task["due"] = due if due.endswith("Z") else due + "Z"
+
+            # Обновление блока времени и/или описания в notes
+            if "start_time" in fields or "end_time" in fields or "description" in fields:
+                # Парсим текущие notes: первая строка может быть ⏰-блоком
+                current_notes = task.get("notes", "")
+                if current_notes.startswith("⏰ "):
+                    lines = current_notes.split("\n", 1)
+                    old_desc = lines[1] if len(lines) > 1 else ""
+                    # Восстанавливаем start/end из текущего блока
+                    block_part = lines[0][2:].strip()  # убираем "⏰ "
+                    if " – " in block_part:
+                        old_start, old_end = block_part.split(" – ", 1)
+                    else:
+                        old_start, old_end = block_part, ""
+                else:
+                    old_start, old_end, old_desc = "", "", current_notes
+
+                new_start = fields.get("start_time", old_start)
+                new_end = fields.get("end_time", old_end)
+                new_desc = fields.get("description", old_desc)
+
+                notes_parts = []
+                if new_start:
+                    block = f"⏰ {new_start}"
+                    if new_end:
+                        block += f" – {new_end}"
+                    notes_parts.append(block)
+                if new_desc:
+                    notes_parts.append(new_desc)
+                task["notes"] = "\n".join(notes_parts)
 
             updated = (
                 service.tasks()

@@ -138,8 +138,9 @@ def _fmt_fields(fields: dict) -> str:
     lines = []
     for key, val in fields.items():
         label = {"title": "название", "start": "начало", "end": "конец",
-                 "description": "описание", "due": "дедлайн"}.get(key, key)
-        formatted = _fmt_iso(str(val)) if key in ("start", "end", "due") else str(val)
+                 "description": "описание", "due": "дедлайн",
+                 "start_time": "начало", "end_time": "конец"}.get(key, key)
+        formatted = _fmt_iso(str(val)) if key in ("start", "end", "due", "start_time", "end_time") else str(val)
         lines.append(f"  • {label}: {formatted}")
     return "\n".join(lines)
 
@@ -184,7 +185,7 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
         lines = [f"Создать задачу: *{tool_args.get('title', '')}*"]
         if tool_args.get("start_time"):
             end_t = tool_args.get("end_time", "")
-            sep = f" – {end_t}" if end_t else ""
+            sep = f" – {_fmt_iso(end_t)}" if end_t else ""
             lines.append(f"Время: {_fmt_iso(tool_args['start_time'])}{sep}")
         if tool_args.get("due"):
             lines.append(f"Дедлайн: {_fmt_iso(tool_args['due'])}")
