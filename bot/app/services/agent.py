@@ -39,7 +39,8 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 3. Если есть конфликт — предложи перепланирование снизу вверх по приоритетам. [HARD] не трогать никогда.
 4. Если запрос непонятен — честно скажи об этом, не угадывай.
 5. Отвечай кратко и по делу.
-6. Текущее время UTC: {current_time}
+6. Текущее время: {current_time} (временная зона пользователя: {timezone})
+7. Все времена от пользователя — в его локальной зоне {timezone}. Передавай их в инструменты КАК ЕСТЬ, без конвертации в UTC.
 
 ## Работа с расписанием:
 - Когда пользователь присылает недельное расписание (дни недели → занятия/встречи), используй `bulk_create_events`.
@@ -56,8 +57,13 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 
 def _get_system_prompt() -> str:
     """Возвращает системный промпт с текущим временем."""
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return SYSTEM_PROMPT.format(current_time=now)
+    import zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo(config.TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
+    return SYSTEM_PROMPT.format(current_time=now, timezone=config.TIMEZONE)
 
 
 # Диспетчер: имя_tool → функция

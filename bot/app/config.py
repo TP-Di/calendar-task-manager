@@ -42,5 +42,8 @@ class Config:
     # Максимум сообщений в истории диалога
     MAX_HISTORY: int = 20
 
+    # Временная зона пользователя (IANA, например "Asia/Almaty", "Europe/Moscow")
+    TIMEZONE: str = os.getenv("TIMEZONE", "UTC")
+
 
 config = Config()

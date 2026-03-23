@@ -179,8 +179,8 @@ async def create_event(
             body: dict[str, Any] = {
                 "summary": title,
                 "description": full_description,
-                "start": {"dateTime": start, "timeZone": "UTC"},
-                "end": {"dateTime": end, "timeZone": "UTC"},
+                "start": {"dateTime": start, "timeZone": config.TIMEZONE},
+                "end": {"dateTime": end, "timeZone": config.TIMEZONE},
             }
             event = service.events().insert(calendarId="primary", body=body).execute()
             logger.info("Создано событие: %s (%s)", title, event.get("id"))
@@ -222,9 +222,9 @@ async def update_event(event_id: str, fields: dict) -> dict:
             if "description" in fields:
                 event["description"] = fields["description"]
             if "start" in fields:
-                event["start"] = {"dateTime": fields["start"], "timeZone": "UTC"}
+                event["start"] = {"dateTime": fields["start"], "timeZone": config.TIMEZONE}
             if "end" in fields:
-                event["end"] = {"dateTime": fields["end"], "timeZone": "UTC"}
+                event["end"] = {"dateTime": fields["end"], "timeZone": config.TIMEZONE}
 
             updated = (
                 service.events()
