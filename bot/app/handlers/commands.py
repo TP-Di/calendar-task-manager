@@ -5,9 +5,9 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
-from aiogram import Router
+from aiogram import F, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from app.config import config
 from app.db.database import clear_history
@@ -17,34 +17,109 @@ import app.services.tasks as tasks_svc
 logger = logging.getLogger(__name__)
 router = Router()
 
+MAIN_KB = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📅 Нагрузка")],
+        [KeyboardButton(text="🗓 Что сегодня?"), KeyboardButton(text="📋 Задачи")],
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="Напиши или выбери действие...",
+)
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message) -> None:
     """Приветственное сообщение."""
     await message.answer(
         "👋 Привет! Я твой персональный планировщик.\n\n"
-        "Я помогу тебе управлять расписанием через Google Calendar и задачами через Google Tasks.\n\n"
-        "Просто напиши мне что нужно сделать, или используй /help для списка команд.",
+        "Просто напиши что нужно сделать — добавить занятие, перенести встречу, посмотреть расписание.",
         parse_mode=None,
+        reply_markup=MAIN_KB,
     )
+
+
+@router.message(F.text == "📊 Статус")
+async def btn_status(message: Message) -> None:
+    await cmd_status(message)
+
+
+@router.message(F.text == "📅 Нагрузка")
+async def btn_load(message: Message) -> None:
+    await cmd_load(message)
+
+
+@router.message(F.text == "🗓 Что сегодня?")
+async def btn_today(message: Message) -> None:
+    """Показывает события на сегодня."""
+    now = datetime.now(timezone.utc)
+    day_end = now.replace(hour=23, minute=59, second=59)
+    try:
+        events = await cal.get_events(now.isoformat(), day_end.isoformat())
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+    if not events:
+        await message.answer("На сегодня событий нет ✅")
+        return
+    lines = ["*📅 Сегодня:*"]
+    for ev in events:
+        start = ev.get("start", "")
+        time_str = ""
+        if "T" in start:
+            try:
+                dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
+                time_str = dt.strftime("%H:%M") + " "
+            except Exception:
+                pass
+        lines.append(f"  • {time_str}{ev.get('title', '')}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
+
+
+@router.message(F.text == "📋 Задачи")
+async def btn_tasks(message: Message) -> None:
+    """Показывает активные задачи."""
+    try:
+        tasks = await tasks_svc.get_tasks()
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}")
+        return
+    if not tasks:
+        await message.answer("Активных задач нет ✅")
+        return
+    now = datetime.now(timezone.utc)
+    lines = ["*📋 Активные задачи:*"]
+    for t in tasks[:15]:
+        due = t.get("due", "")
+        due_str = ""
+        prefix = "  •"
+        if due:
+            try:
+                due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
+                due_str = f" → {due_dt.strftime('%d.%m')}"
+                if due_dt < now:
+                    prefix = "  ⚠️"
+            except Exception:
+                pass
+        lines.append(f"{prefix} {t['title']}{due_str}")
+    await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     """Список доступных команд."""
     text = (
-        "📖 *Доступные команды:*\n\n"
-        "/start — начало работы\n"
-        "/help — эта справка\n"
-        "/status — активные задачи и ближайшие события\n"
-        "/load — нагрузка на текущую неделю\n"
-        "/done [название] — отметить задачу выполненной\n"
-        "/postpone [название] [время] — отложить задачу\n"
-        "/upload — загрузить PDF или фото с расписанием\n"
-        "/clear — очистить историю диалога\n\n"
-        "Или просто пиши мне сообщения на русском — я пойму! 🤖"
+        "📖 *Справка:*\n\n"
+        "Просто пиши что нужно — я пойму без команд.\n\n"
+        "*Кнопки:*\n"
+        "📊 Статус — задачи и события на 3 дня\n"
+        "📅 Нагрузка — часы событий на неделю\n"
+        "🗓 Что сегодня? — события на сегодня\n"
+        "📋 Задачи — список активных задач\n\n"
+        "*Команды:*\n"
+        "/upload — загрузить PDF с расписанием\n"
+        "/clear — сбросить историю диалога"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="Markdown", reply_markup=MAIN_KB)
 
 
 @router.message(Command("status"))
