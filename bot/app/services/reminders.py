@@ -70,7 +70,7 @@ async def check_and_send_reminders(bot: Bot) -> None:
         logger.debug("Тихие часы, напоминания пропущены")
         return
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(zoneinfo.ZoneInfo(config.TIMEZONE))
 
     try:
         active_tasks = await tasks_svc.get_tasks()
@@ -122,7 +122,7 @@ async def check_and_send_reminders(bot: Bot) -> None:
         text = (
             f"{urgency}\n"
             f"📋 *{title}*\n"
-            f"Дедлайн: {due_dt.strftime('%d.%m.%Y %H:%M')} UTC ({time_text})"
+            f"Дедлайн: {due_dt.astimezone(zoneinfo.ZoneInfo(config.TIMEZONE)).strftime('%d.%m.%Y %H:%M')} ({time_text})"
         )
 
         keyboard = _make_snooze_keyboard(task_id) if task_id else None

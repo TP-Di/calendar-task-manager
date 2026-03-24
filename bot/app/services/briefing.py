@@ -4,6 +4,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
@@ -62,7 +63,7 @@ def _format_task_line(task: dict, now: datetime) -> str:
 
 async def build_briefing_text() -> str:
     """Формирует текст утреннего брифинга."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     tomorrow_end = today_start + timedelta(days=2)

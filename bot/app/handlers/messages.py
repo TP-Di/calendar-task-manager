@@ -607,7 +607,7 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("snooze:"))
 async def handle_snooze(callback: CallbackQuery) -> None:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     await callback.answer("Откладываю...")
 
@@ -618,7 +618,7 @@ async def handle_snooze(callback: CallbackQuery) -> None:
     task_id      = parts[1]
     snooze_value = parts[2]
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(_app_tz())
     if snooze_value == "30":
         new_due = now + timedelta(minutes=30)
     elif snooze_value == "60":
@@ -633,7 +633,7 @@ async def handle_snooze(callback: CallbackQuery) -> None:
         await tasks_svc.update_task(task_id, {"due": new_due.isoformat()})
         time_str = new_due.strftime("%d.%m %H:%M")
         await callback.message.edit_text(
-            callback.message.text + f"\n\n⏰ *Отложено до {time_str} UTC*",
+            callback.message.text + f"\n\n⏰ *Отложено до {time_str}*",
             parse_mode="Markdown",
             reply_markup=None,
         )
