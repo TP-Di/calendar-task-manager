@@ -169,7 +169,17 @@ async def update_task(task_id: str, fields: dict) -> dict:
                 task["title"] = fields["title"]
             if "due" in fields:
                 due = fields["due"]
-                task["due"] = due if due.endswith("Z") else due + "Z"
+                # Убираем timezone-offset (+00:00, +05:00 и т.п.) перед добавлением Z,
+                # иначе получается невалидный вид "...+00:00Z"
+                if not due.endswith("Z"):
+                    # Отрезаем суффикс вида ±HH:MM если есть
+                    for sign in ("+", "-"):
+                        idx = due.rfind(sign, 10)  # ищем только после YYYY-MM-DD
+                        if idx != -1:
+                            due = due[:idx]
+                            break
+                    due += "Z"
+                task["due"] = due
 
             # Обновление блока времени и/или описания в notes
             if "start_time" in fields or "end_time" in fields or "description" in fields:

@@ -19,9 +19,18 @@ logger = logging.getLogger(__name__)
 
 
 def _is_placeholder(value: str) -> bool:
-    """Возвращает True, если значение выглядит как плейсхолдер (например <task_id>)."""
+    """Возвращает True, если значение выглядит как плейсхолдер, а не реальный ID."""
     v = (value or "").strip()
-    return v.startswith("<") and v.endswith(">")
+    # <task_id>, <id>, ...
+    if v.startswith("<") and v.endswith(">"):
+        return True
+    # ${get_tasks()[0].id}, ${task_id}, ...
+    if v.startswith("${") and v.endswith("}"):
+        return True
+    # {task_id}, {id}
+    if v.startswith("{") and v.endswith("}"):
+        return True
+    return False
 
 
 # Системный промпт агента
@@ -79,10 +88,10 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 - Пример: `{{"event_id": "abc123", "event_title": "CD", "event_start": "2026-03-23T09:30:00+05:00", "fields": {{...}}}}`
 
 ## При вызове complete_task, delete_task и update_task:
-- После get_tasks у тебя есть название задачи
-- ВСЕГДА передавай `task_title` в вызов complete_task / delete_task / update_task
-- Пример: `{{"task_id": "abc123", "task_title": "Изучить Airflow"}}`
-- НИКОГДА не передавай плейсхолдеры вроде `<task_id>` или `<id>` — только реальные ID из результата get_tasks.
+- Передавай только `task_title` — система сама найдёт задачу по названию.
+- `task_id` передавать НЕ НУЖНО. Если известен из get_tasks — можешь передать, иначе — пропусти.
+- Пример: `{{"task_title": "Изучить Airflow", "fields": {{...}}}}`
+- НИКОГДА не придумывай task_id самостоятельно — только из реального результата get_tasks.
 
 ## Планирование задач по времени:
 - Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем вызови create_task с полями start_time и end_time.
@@ -404,6 +413,35 @@ def _format_tool_success(tool_name: str, result) -> str:
     return "✅ Действие выполнено."
 
 
+async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
+    """
+    Если task_id отсутствует или является плейсхолдером — ищет задачу по task_title.
+    Возвращает (обновлённые args, сообщение об ошибке или None).
+    """
+    task_id = tool_args.get("task_id", "")
+    if task_id and not _is_placeholder(task_id):
+        return tool_args, None
+
+    task_title = (tool_args.get("task_title") or "").strip()
+    if not task_title:
+        return tool_args, "❌ Не указано название задачи. Повторите запрос."
+
+    try:
+        tasks = await tasks_svc.get_tasks()
+    except Exception as e:
+        return tool_args, f"❌ Ошибка получения задач: {e}"
+
+    title_lower = task_title.lower()
+    matches = [t for t in tasks if title_lower in t.get("title", "").lower()]
+    if not matches:
+        return tool_args, f"❌ Задача «{task_title}» не найдена среди активных."
+
+    # Точное совпадение предпочтительнее частичного
+    exact = [t for t in matches if t.get("title", "").lower() == title_lower]
+    found = exact[0] if exact else matches[0]
+    return {**tool_args, "task_id": found["id"]}, None
+
+
 async def execute_pending_tool(pending_data: dict) -> str:
     """
     Выполняет отложенный tool call после подтверждения пользователем.
@@ -413,18 +451,19 @@ async def execute_pending_tool(pending_data: dict) -> str:
     tool_args = pending_data["tool_args"]
     user_id = pending_data["user_id"]
 
-    # Последняя линия защиты: не выполнять update/delete с пустым или плейсхолдерным ID
+    # Защита event_id
     _eid = tool_args.get("event_id", "")
     if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
         error_text = "❌ event_id некорректный — повторите запрос, я запрошу события автоматически."
         await add_message(user_id, "assistant", error_text)
         return error_text
 
-    _tid = tool_args.get("task_id", "")
-    if tool_name in ("complete_task", "delete_task", "update_task") and (not _tid or _is_placeholder(_tid)):
-        error_text = "❌ task_id некорректный — повторите запрос, я запрошу задачи автоматически."
-        await add_message(user_id, "assistant", error_text)
-        return error_text
+    # Для task-операций разрешаем task_id по названию задачи
+    if tool_name in ("complete_task", "delete_task", "update_task"):
+        tool_args, err = await _resolve_task_id(tool_args)
+        if err:
+            await add_message(user_id, "assistant", err)
+            return err
 
     if tool_name in _TOOL_DISPATCH:
         try:
