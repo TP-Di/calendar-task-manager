@@ -8,6 +8,8 @@ import copy
 import json
 import logging
 import re
+import zoneinfo as _zi
+from datetime import datetime as _dt, date as _date, timedelta
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -35,45 +37,92 @@ _grid_sessions: dict[int, dict] = {}
 # ─── Grid constants ────────────────────────────────────────────────────────────
 _GRID_START = 9    # 09:00
 _GRID_SLOTS = 24   # 24 × 30 мин = 9:00–21:00
-_GRID_COLS  = 8
+_GRID_COLS  = 4    # 4 кнопки в ряду → 6 рядов
+
+_WEEKDAYS_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
-# ─── Grid helpers ──────────────────────────────────────────────────────────────
+# ─── Timezone helpers ──────────────────────────────────────────────────────────
+
+def _app_tz() -> _zi.ZoneInfo:
+    from app import config
+    return _zi.ZoneInfo(config.TIMEZONE)
+
+
+def _parse_iso_dt(s: str) -> _dt:
+    s = s.strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = _dt.fromisoformat(s)
+    except ValueError:
+        dt = _dt.fromisoformat(s[:19])
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_zi.ZoneInfo("UTC"))
+    return dt
+
+
+def _to_local_hhmm(iso: str) -> str:
+    """ISO datetime → HH:MM в часовом поясе приложения."""
+    try:
+        return _parse_iso_dt(iso).astimezone(_app_tz()).strftime("%H:%M")
+    except Exception:
+        return iso[11:16] if len(iso) >= 16 else "??"
+
+
+def _to_local_date(iso: str) -> str:
+    """ISO datetime → YYYY-MM-DD в часовом поясе приложения."""
+    try:
+        return _parse_iso_dt(iso).astimezone(_app_tz()).strftime("%Y-%m-%d")
+    except Exception:
+        return iso[:10]
+
+
+def _make_local_iso(date_str: str, hhmm: str) -> str:
+    """YYYY-MM-DD + HH:MM → ISO datetime в часовом поясе приложения."""
+    tz = _app_tz()
+    y, mo, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
+    h, m = int(hhmm[:2]), int(hhmm[3:5])
+    return _dt(y, mo, d, h, m, tzinfo=tz).isoformat()
+
+
+def _date_label(date_str: str) -> str:
+    d = _date.fromisoformat(date_str)
+    wd = _WEEKDAYS_RU[d.weekday()]
+    return f"{d.day:02d}.{d.month:02d} {wd}"
+
+
+# ─── Grid slot helpers ─────────────────────────────────────────────────────────
 
 def _slot_to_hhmm(idx: int) -> str:
     total = _GRID_START * 60 + idx * 30
     return f"{total // 60:02d}:{total % 60:02d}"
 
 
-def _time_to_slot_floor(hhmm: str) -> int:
-    """Slot index that CONTAINS hhmm (floor)."""
+def _hhmm_to_slot_floor(hhmm: str) -> int:
     h, m = int(hhmm[:2]), int(hhmm[3:5])
     return max(0, min(_GRID_SLOTS - 1, (h * 60 + m - _GRID_START * 60) // 30))
 
 
-def _time_to_slot_ceil_excl(hhmm: str) -> int:
-    """Exclusive end index: first slot strictly AFTER hhmm (ceiling)."""
+def _hhmm_to_slot_ceil_excl(hhmm: str) -> int:
     h, m = int(hhmm[:2]), int(hhmm[3:5])
     raw = h * 60 + m - _GRID_START * 60
     return max(0, min(_GRID_SLOTS, (raw + 29) // 30))
 
 
-def _extract_tz_offset(iso: str) -> str:
-    m = re.search(r'[+-]\d{2}:\d{2}$', iso)
-    return m.group() if m else "+00:00"
-
-
 def _events_to_slot_types(events: list[dict]) -> dict[int, str]:
-    """Возвращает {slot_idx: 'hard'|'soft'} по списку событий."""
+    """Возвращает {slot_idx: 'hard'|'soft'} — времена конвертируются в локальный tz."""
     result: dict[int, str] = {}
     for ev in events:
-        s = ev.get("start", "")
-        e = ev.get("end", "")
-        if len(s) < 16 or len(e) < 16:
+        s_iso = ev.get("start", "")
+        e_iso = ev.get("end", "")
+        if not s_iso or not e_iso:
             continue
-        s_slot = _time_to_slot_floor(s[11:16])
-        e_slot = _time_to_slot_ceil_excl(e[11:16])
+        s_hhmm = _to_local_hhmm(s_iso)
+        e_hhmm = _to_local_hhmm(e_iso)
         hard = reschedule_svc.is_hard(ev)
+        s_slot = _hhmm_to_slot_floor(s_hhmm)
+        e_slot = _hhmm_to_slot_ceil_excl(e_hhmm)
         for idx in range(s_slot, e_slot):
             if 0 <= idx < _GRID_SLOTS:
                 if result.get(idx) != "hard":
@@ -82,36 +131,54 @@ def _events_to_slot_types(events: list[dict]) -> dict[int, str]:
 
 
 def _initial_selection(tool_args: dict) -> set[int]:
-    """Начальная выборка слотов из аргументов инструмента (с округлением наружу)."""
+    """Начальная выборка слотов из tool_args (в локальном времени)."""
     start_iso = tool_args.get("start_time") or tool_args.get("start", "")
     end_iso   = tool_args.get("end_time")   or tool_args.get("end",   "")
-    if len(start_iso) < 16 or len(end_iso) < 16:
+    if not start_iso or not end_iso:
         return set()
-    s = _time_to_slot_floor(start_iso[11:16])
-    e = _time_to_slot_ceil_excl(end_iso[11:16])
+    s = _hhmm_to_slot_floor(_to_local_hhmm(start_iso))
+    e = _hhmm_to_slot_ceil_excl(_to_local_hhmm(end_iso))
     return set(range(s, e))
 
 
-def _build_grid_keyboard(selected: set[int], slot_types: dict[int, str]) -> InlineKeyboardMarkup:
+# ─── Grid keyboard builder ─────────────────────────────────────────────────────
+
+def _build_grid_keyboard(
+    selected: set[int],
+    slot_types: dict[int, str],
+    date_str: str,
+) -> InlineKeyboardMarkup:
     rows = []
+
+    # Ряд навигации по датам
+    prev_d = (_date.fromisoformat(date_str) - timedelta(days=1)).strftime("%d.%m")
+    next_d = (_date.fromisoformat(date_str) + timedelta(days=1)).strftime("%d.%m")
+    rows.append([
+        InlineKeyboardButton(text=f"◀ {prev_d}", callback_data="grid_day:prev"),
+        InlineKeyboardButton(text=f"📅 {_date_label(date_str)}", callback_data="grid_day:cur"),
+        InlineKeyboardButton(text=f"{next_d} ▶", callback_data="grid_day:next"),
+    ])
+
+    # Слоты: 4 per row × 6 rows
     for row in range(_GRID_SLOTS // _GRID_COLS):
         btns = []
         for col in range(_GRID_COLS):
             idx = row * _GRID_COLS + col
             stype = slot_types.get(idx)
             if idx in selected:
-                emoji = "🟦"
+                emoji = "✅"
             elif stype == "hard":
-                emoji = "🟥"
+                emoji = "🔴"
             elif stype == "soft":
-                emoji = "🟨"
+                emoji = "🔵"
             else:
-                emoji = "⬜"
+                emoji = "🟢"
             btns.append(InlineKeyboardButton(
                 text=f"{emoji}{_slot_to_hhmm(idx)}",
                 callback_data=f"st:{idx}",
             ))
         rows.append(btns)
+
     rows.append([
         InlineKeyboardButton(text="✅ Подтвердить", callback_data="grid_confirm"),
         InlineKeyboardButton(text="❌ Отмена",      callback_data="grid_cancel"),
@@ -119,17 +186,16 @@ def _build_grid_keyboard(selected: set[int], slot_types: dict[int, str]) -> Inli
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _grid_header(task_title: str) -> str:
+def _grid_msg_text(task_title: str, date_str: str) -> str:
     return (
         f"📅 Выбери слоты для *{task_title}*\n\n"
-        "⬜ свободно  🟥 нельзя (HARD)  🟨 займём (SOFT)  🟦 выбрано"
+        "🟢 свободно  🔵 можно занять (SOFT)  🔴 нельзя (HARD)  ✅ выбрано"
     )
 
 
-# ─── Helpers for timed tool detection ─────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _timed_tool(tools: list[dict]) -> tuple[str, dict, str, str] | None:
-    """Возвращает (tool_name, tool_args, start_iso, end_iso) для первого инструмента с слотом."""
     for t in tools:
         name, args = t["tool_name"], t["tool_args"]
         if name == "create_task" and args.get("start_time") and args.get("end_time"):
@@ -139,8 +205,6 @@ def _timed_tool(tools: list[dict]) -> tuple[str, dict, str, str] | None:
     return None
 
 
-# ─── Confirm keyboard (no reschedule) ─────────────────────────────────────────
-
 def _make_confirm_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Да",  callback_data="confirm:yes"),
@@ -148,10 +212,17 @@ def _make_confirm_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+async def _fetch_day_events(date_str: str) -> list[dict]:
+    tz = _app_tz()
+    y, mo, d = int(date_str[:4]), int(date_str[5:7]), int(date_str[8:10])
+    day_start = _dt(y, mo, d,  0,  0, 0, tzinfo=tz)
+    day_end   = _dt(y, mo, d, 23, 59, 59, tzinfo=tz)
+    return await cal_svc.get_events(day_start.isoformat(), day_end.isoformat())
+
+
 # ─── Main agent response handler ──────────────────────────────────────────────
 
 async def handle_agent_response(message: Message, response: str, user_id: int) -> None:
-    """Разбирает ответ агента: PENDING_TOOL → подтверждение, иначе — текст."""
     if not response.startswith("PENDING_TOOL::"):
         try:
             await message.answer(response, parse_mode="Markdown")
@@ -172,14 +243,12 @@ async def handle_agent_response(message: Message, response: str, user_id: int) -
     if not tools and pending.get("tool_name"):
         tools = [{"tool_name": pending["tool_name"], "tool_args": pending["tool_args"]}]
 
-    # Описание действия
     if len(tools) == 1:
         description = _describe_tool_action(tools[0]["tool_name"], tools[0]["tool_args"])
     else:
         parts = [_describe_tool_action(t["tool_name"], t["tool_args"]) for t in tools]
         description = "\n\n".join(f"*{i+1}.* {p}" for i, p in enumerate(parts))
 
-    # Проверяем конфликты только для инструментов с временным слотом
     timed = _timed_tool(tools)
     if timed:
         tool_name, tool_args, start_iso, end_iso = timed
@@ -192,12 +261,10 @@ async def handle_agent_response(message: Message, response: str, user_id: int) -
         hard_events = [e for e in events if reschedule_svc.is_hard(e)]
 
         if soft_events:
-            # Показываем grid вместо обычного подтверждения
+            date_str   = _to_local_date(start_iso)
             slot_types = _events_to_slot_types(events)
             selected   = _initial_selection(tool_args)
             task_title = tool_args.get("title", "задача")
-            date_str   = start_iso[:10]
-            tz_offset  = _extract_tz_offset(start_iso)
 
             _grid_sessions[user_id] = {
                 "pending":    pending,
@@ -205,30 +272,24 @@ async def handle_agent_response(message: Message, response: str, user_id: int) -
                 "selected":   selected,
                 "slot_types": slot_types,
                 "date":       date_str,
-                "tz_offset":  tz_offset,
                 "task_title": task_title,
+                "duration":   len(selected),  # сохраняем длительность для навигации
             }
             _pending_confirmations.pop(user_id, None)
 
+            text = _grid_msg_text(task_title, date_str)
+            kb   = _build_grid_keyboard(selected, slot_types, date_str)
             try:
-                await message.answer(
-                    _grid_header(task_title),
-                    parse_mode="Markdown",
-                    reply_markup=_build_grid_keyboard(selected, slot_types),
-                )
+                await message.answer(text, parse_mode="Markdown", reply_markup=kb)
             except Exception:
-                await message.answer(
-                    _grid_header(task_title),
-                    reply_markup=_build_grid_keyboard(selected, slot_types),
-                )
+                await message.answer(text, reply_markup=kb)
             return
 
-        # Только HARD конфликты — обычное подтверждение с предупреждением
         if hard_events:
             lines = ["\n\n⚠️ *Пересечение с HARD-событиями (не будут тронуты):*"]
             for ev in hard_events:
                 s, e = ev.get("start", ""), ev.get("end", "")
-                t_str = f" {s[11:16]}–{e[11:16]}" if len(s) >= 16 else ""
+                t_str = f" {_to_local_hhmm(s)}–{_to_local_hhmm(e)}" if s and e else ""
                 lines.append(f"• {ev.get('title', '?')}{t_str}")
             description += "\n".join(lines)
 
@@ -249,14 +310,13 @@ async def handle_agent_response(message: Message, response: str, user_id: int) -
 
 @router.callback_query(F.data.startswith("st:"))
 async def handle_slot_toggle(callback: CallbackQuery) -> None:
-    """Переключает слот в grid."""
     user_id = callback.from_user.id
     session = _grid_sessions.get(user_id)
     if not session:
         await callback.answer("Сессия истекла. Повтори запрос.", show_alert=True)
         return
 
-    idx = int(callback.data.split(":")[1])
+    idx   = int(callback.data.split(":")[1])
     stype = session["slot_types"].get(idx)
 
     if stype == "hard":
@@ -272,15 +332,60 @@ async def handle_slot_toggle(callback: CallbackQuery) -> None:
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(
-            reply_markup=_build_grid_keyboard(selected, session["slot_types"])
+            reply_markup=_build_grid_keyboard(selected, session["slot_types"], session["date"])
         )
     except Exception:
         pass
 
 
+@router.callback_query(F.data.startswith("grid_day:"))
+async def handle_grid_day_nav(callback: CallbackQuery) -> None:
+    user_id = callback.from_user.id
+    session = _grid_sessions.get(user_id)
+    if not session:
+        await callback.answer("Сессия истекла. Повтори запрос.", show_alert=True)
+        return
+
+    direction = callback.data.split(":")[1]
+    if direction == "cur":
+        await callback.answer()
+        return
+
+    current  = _date.fromisoformat(session["date"])
+    new_date = current + timedelta(days=-1 if direction == "prev" else 1)
+    new_date_str = new_date.isoformat()
+
+    await callback.answer()
+
+    try:
+        events = await _fetch_day_events(new_date_str)
+    except Exception:
+        events = []
+
+    slot_types = _events_to_slot_types(events)
+
+    # Сохраняем те же индексы слотов (то же время, другой день)
+    session["date"]       = new_date_str
+    session["events"]     = events
+    session["slot_types"] = slot_types
+
+    try:
+        await callback.message.edit_text(
+            _grid_msg_text(session["task_title"], new_date_str),
+            parse_mode="Markdown",
+            reply_markup=_build_grid_keyboard(session["selected"], slot_types, new_date_str),
+        )
+    except Exception:
+        try:
+            await callback.message.edit_reply_markup(
+                reply_markup=_build_grid_keyboard(session["selected"], slot_types, new_date_str)
+            )
+        except Exception:
+            pass
+
+
 @router.callback_query(F.data == "grid_confirm")
 async def handle_grid_confirm(callback: CallbackQuery) -> None:
-    """Подтверждает выбор слотов: перепланирует конфликты и создаёт задачу."""
     user_id = callback.from_user.id
     session = _grid_sessions.pop(user_id, None)
     if not session:
@@ -290,11 +395,10 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
     selected: set[int] = session["selected"]
     if not selected:
         await callback.answer("Выбери хотя бы один слот.", show_alert=True)
-        _grid_sessions[user_id] = session  # вернуть сессию
+        _grid_sessions[user_id] = session
         return
 
     await callback.answer()
-
     try:
         await callback.message.edit_text(
             callback.message.text + "\n\n⏳ Выполняю...",
@@ -303,15 +407,10 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
     except Exception:
         pass
 
-    # Новые границы из выбранных слотов
-    min_slot = min(selected)
-    max_slot = max(selected)
-    new_start_hhmm = _slot_to_hhmm(min_slot)
-    new_end_hhmm   = _slot_to_hhmm(max_slot + 1)
-    date      = session["date"]
-    tz_offset = session["tz_offset"]
-    new_start_iso = f"{date}T{new_start_hhmm}:00{tz_offset}"
-    new_end_iso   = f"{date}T{new_end_hhmm}:00{tz_offset}"
+    # Новые границы из выбранных слотов (в локальном tz)
+    date         = session["date"]
+    new_start_iso = _make_local_iso(date, _slot_to_hhmm(min(selected)))
+    new_end_iso   = _make_local_iso(date, _slot_to_hhmm(max(selected) + 1))
 
     result_lines: list[str] = []
 
@@ -328,7 +427,7 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
                     ns, ne = action["new_start"], action["new_end"]
                     await cal_svc.update_event(ev_id, {"start": ns, "end": ne})
                     result_lines.append(
-                        f"🔄 *{title}* → {ns[11:16]}–{ne[11:16]}"
+                        f"🔄 *{title}* → {_to_local_hhmm(ns)}–{_to_local_hhmm(ne)}"
                     )
                 elif action["type"] == "split":
                     p1s, p1e = action["part1_start"], action["part1_end"]
@@ -341,7 +440,8 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
                         description=ev.get("description", ""),
                     )
                     result_lines.append(
-                        f"✂️ *{title}* → {p1s[11:16]}–{p1e[11:16]} и {p2s[11:16]}–{p2e[11:16]}"
+                        f"✂️ *{title}* → {_to_local_hhmm(p1s)}–{_to_local_hhmm(p1e)}"
+                        f" и {_to_local_hhmm(p2s)}–{_to_local_hhmm(p2e)}"
                     )
             except Exception as e:
                 logger.error("Ошибка перепланирования '%s': %s", title, e)
@@ -398,7 +498,6 @@ async def handle_grid_cancel(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("confirm:"))
 async def handle_confirmation(callback: CallbackQuery) -> None:
-    """Обрабатывает нажатие кнопок Да/Нет подтверждения."""
     user_id = callback.from_user.id
     answer  = callback.data.split(":")[1]
 
@@ -454,7 +553,7 @@ async def handle_snooze(callback: CallbackQuery) -> None:
     if len(parts) < 3:
         return
 
-    task_id     = parts[1]
+    task_id      = parts[1]
     snooze_value = parts[2]
 
     now = datetime.now(timezone.utc)
@@ -493,7 +592,6 @@ async def handle_text_message(message: Message) -> None:
     if not user_text:
         return
 
-    # Отменяем незавершённые сессии
     _pending_confirmations.pop(user_id, None)
     _grid_sessions.pop(user_id, None)
 
