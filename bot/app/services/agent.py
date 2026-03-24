@@ -196,7 +196,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
     Если агент запрашивает модифицирующий tool — возвращает специальный
     маркер вида: PENDING_TOOL::<json> для последующего подтверждения.
     """
-    client = AsyncGroq(api_key=config.GROQ_API_KEY)
+    client = AsyncGroq(api_key=config.GROQ_API_KEY, timeout=30.0)
 
     # Сохраняем сообщение пользователя в историю
     await add_message(user_id, "user", user_message)
