@@ -131,6 +131,16 @@ SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик
 - При просьбе "сократить задачу на X часов" → update_task с новым end_time в fields + update_event с новым end.
 - При просьбе "создать такую же на оставшееся время" → get_events, create_task с новым слотом.
 
+## Проверка конфликтов при явном указании времени:
+- Если пользователь явно задаёт start_time/end_time для create_task или create_event — СНАЧАЛА вызови get_events на этот день, чтобы проверить конфликты.
+- Конфликт = любое существующее событие или 📋 задача-блок, чьё время пересекается с запрошенным слотом.
+- Если конфликт найден:
+  1. Сообщи пользователю: какое событие конфликтует, его тег [HARD]/[SOFT] и приоритет.
+  2. Если конфликтующее [SOFT] и ниже приоритетом — предложи его сдвинуть, жди подтверждения.
+  3. Если конфликтующее [HARD] или выше приоритетом — предложи другой свободный слот для новой задачи.
+  4. Если пользователь настаивает на этом времени — создавай без лишних вопросов.
+- Исключение: если пользователь явно сказал "поставь несмотря на конфликты" — создавай сразу без get_events.
+
 ## Разрешение относительных дат:
 Всегда переводи относительные даты в конкретный ISO-формат ПЕРЕД вызовом tool.
 Используй поле "Ближайшие 7 дней" как шпаргалку — там уже указаны даты на неделю вперёд.
@@ -333,7 +343,13 @@ async def run_agent(user_id: int, user_message: str) -> str:
             }
         )
 
-        # Обрабатываем каждый tool call
+        # Обрабатываем каждый tool call.
+        # Read-only инструменты выполняются немедленно.
+        # Write-инструменты (CONFIRMATION_REQUIRED) накапливаются в очередь —
+        # все из одного LLM-ответа показываются пользователю одним батчем.
+        pending_queue: list[dict] = []
+        validation_failed = False
+
         for tool_call in message.tool_calls:
             tool_name = tool_call.function.name
             try:
@@ -343,8 +359,6 @@ async def run_agent(user_id: int, user_message: str) -> str:
 
             logger.info("Tool call: %s(%s)", tool_name, tool_args)
 
-            # Если инструмент требует подтверждения — прерываем цикл
-            # и возвращаем маркер для обработки в handler
             if tool_name in CONFIRMATION_REQUIRED_TOOLS:
                 # Защита: update_event/delete_event без event_id → форсируем get_events
                 _eid = tool_args.get("event_id", "")
@@ -365,11 +379,10 @@ async def run_agent(user_id: int, user_message: str) -> str:
                             )
                         }, ensure_ascii=False),
                     })
-                    break  # Выходим из inner for-loop, outer for-loop сделает retry
+                    validation_failed = True
+                    pending_queue.clear()
+                    break  # outer loop сделает retry
 
-                # task_id для task-операций опционален — lookup по task_title
-                # происходит в execute_pending_tool через _resolve_task_id.
-                # Проверяем только что task_title не пустой.
                 if tool_name in ("complete_task", "delete_task", "update_task"):
                     _tid = tool_args.get("task_id", "")
                     _ttitle = (tool_args.get("task_title") or "").strip()
@@ -381,23 +394,17 @@ async def run_agent(user_id: int, user_message: str) -> str:
                                 "error": "task_title не указан. Передай название задачи в поле task_title."
                             }, ensure_ascii=False),
                         })
+                        validation_failed = True
+                        pending_queue.clear()
                         break
 
-                pending = {
+                # Складываем в очередь, продолжаем обход остальных tool_calls
+                pending_queue.append({
                     "tool_name": tool_name,
                     "tool_args": tool_args,
                     "tool_call_id": tool_call.id,
-                    "messages": messages,
-                    "user_id": user_id,
-                }
-                # Сохраняем нейтральный placeholder, чтобы следующий вызов LLM
-                # не видел незакрытый запрос без ответа ассистента
-                await add_message(
-                    user_id,
-                    "assistant",
-                    "[Ожидаю ответа пользователя]",
-                )
-                return f"PENDING_TOOL::{json.dumps(pending, ensure_ascii=False)}"
+                })
+                continue
 
             # Выполняем read-only tool
             if tool_name in _TOOL_DISPATCH:
@@ -413,7 +420,6 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     ensure_ascii=False,
                 )
 
-            # Добавляем результат tool в messages
             messages.append(
                 {
                     "role": "tool",
@@ -421,6 +427,16 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     "content": tool_result_str,
                 }
             )
+
+        # Если есть накопленные write-инструменты — возвращаем батч на подтверждение
+        if not validation_failed and pending_queue:
+            pending = {
+                "tools": pending_queue,
+                "messages": messages,
+                "user_id": user_id,
+            }
+            await add_message(user_id, "assistant", "[Ожидаю ответа пользователя]")
+            return f"PENDING_TOOL::{json.dumps(pending, ensure_ascii=False)}"
 
     # Превышено число итераций
     fallback = "Не удалось завершить запрос за отведённое число шагов."
@@ -506,42 +522,55 @@ async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
     return {**tool_args, "task_id": found["id"]}, None
 
 
-async def execute_pending_tool(pending_data: dict) -> str:
-    """
-    Выполняет отложенный tool call после подтверждения пользователем.
-    Возвращает форматированный результат без лишнего вызова LLM.
-    """
-    tool_name = pending_data["tool_name"]
-    tool_args = pending_data["tool_args"]
-    user_id = pending_data["user_id"]
-
-    # Защита event_id
+async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
+    """Выполняет один подтверждённый tool и возвращает форматированный результат."""
     _eid = tool_args.get("event_id", "")
     if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
-        error_text = "❌ event_id некорректный — повторите запрос, я запрошу события автоматически."
-        await add_message(user_id, "assistant", error_text)
-        return error_text
+        return "❌ event_id некорректный — повторите запрос, я запрошу события автоматически."
 
-    # Для task-операций разрешаем task_id по названию задачи
     if tool_name in ("complete_task", "delete_task", "update_task"):
         tool_args, err = await _resolve_task_id(tool_args)
         if err:
-            await add_message(user_id, "assistant", err)
             return err
 
-    if tool_name in _TOOL_DISPATCH:
-        try:
-            result = await _TOOL_DISPATCH[tool_name](tool_args)
-        except Exception as e:
-            logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
-            error_text = f"❌ Ошибка при выполнении: {e}"
-            await add_message(user_id, "assistant", error_text)
-            return error_text
-    else:
-        error_text = f"❌ Неизвестный инструмент: {tool_name}"
+    if tool_name not in _TOOL_DISPATCH:
+        return f"❌ Неизвестный инструмент: {tool_name}"
+
+    try:
+        result = await _TOOL_DISPATCH[tool_name](tool_args)
+    except Exception as e:
+        logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
+        return f"❌ Ошибка при выполнении: {e}"
+
+    return _format_tool_success(tool_name, result)
+
+
+async def execute_pending_tool(pending_data: dict) -> str:
+    """
+    Выполняет отложенный tool call (или батч tool calls) после подтверждения.
+    Поддерживает два формата pending_data:
+      - новый: {"tools": [{tool_name, tool_args, tool_call_id}, ...], "user_id": ...}
+      - старый: {"tool_name": ..., "tool_args": ..., "user_id": ...}  (обратная совместимость)
+    """
+    user_id = pending_data["user_id"]
+
+    # Новый батч-формат
+    tools: list[dict] = pending_data.get("tools") or []
+
+    # Обратная совместимость: старый формат с единственным инструментом
+    if not tools and pending_data.get("tool_name"):
+        tools = [{"tool_name": pending_data["tool_name"], "tool_args": pending_data["tool_args"]}]
+
+    if not tools:
+        error_text = "❌ Внутренняя ошибка: нет инструментов для выполнения."
         await add_message(user_id, "assistant", error_text)
         return error_text
 
-    final_text = _format_tool_success(tool_name, result)
+    result_lines: list[str] = []
+    for entry in tools:
+        line = await _execute_single_tool(entry["tool_name"], entry["tool_args"])
+        result_lines.append(line)
+
+    final_text = "\n".join(result_lines)
     await add_message(user_id, "assistant", final_text)
     return final_text
