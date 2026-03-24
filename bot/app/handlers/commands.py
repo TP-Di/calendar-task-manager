@@ -533,26 +533,14 @@ async def cmd_clear(message: Message) -> None:
 
 @router.message(Command("heatmap"))
 async def cmd_heatmap(message: Message) -> None:
-    """Расписание: сегодня + 6 дней вперёд. В воскресенье — итоги прошедшей недели."""
+    """Расписание: сегодня + 6 дней вперёд."""
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo(config.TIMEZONE)
     now_local = datetime.now(tz)
     today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    is_sunday = now_local.weekday() == 6  # 6 = воскресенье
-
-    if is_sunday:
-        # Ретро: показываем прошедшие 7 дней (Пн–Вс этой недели)
-        fetch_start = today - timedelta(days=6)
-        fetch_end   = today + timedelta(days=1)
-        mode_label  = "Итоги недели"
-        caption_prefix = "📊 Итоги недели"
-    else:
-        # Вперёд: сегодня + 6 дней
-        fetch_start = today
-        fetch_end   = today + timedelta(days=7)
-        mode_label  = "Расписание"
-        caption_prefix = "📊 Расписание"
+    fetch_start = today
+    fetch_end   = today + timedelta(days=7)
 
     await message.answer("⏳ Строю тепловую карту...")
 
@@ -574,8 +562,7 @@ async def cmd_heatmap(message: Message) -> None:
 
     photo = BufferedInputFile(img_bytes, filename="heatmap.png")
     date_range = f"{fetch_start.strftime('%d.%m')} – {(fetch_end - timedelta(days=1)).strftime('%d.%m')}"
-    suffix = "" if is_sunday else "\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас"
     await message.answer_photo(
         photo,
-        caption=f"{caption_prefix}: {date_range}{suffix}",
+        caption=f"📊 Расписание: {date_range}\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
     )
