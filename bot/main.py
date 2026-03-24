@@ -96,7 +96,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     )
     logger.info("Синхронизация задач↔календарь каждые 15 мин")
 
-    # Воскресный ретро (каждое воскресенье в 20:00 UTC)
+    # Воскресный ретро (каждое воскресенье в 20:00 по TIMEZONE)
     scheduler.add_job(
         send_weekly_retro,
         trigger="cron",
@@ -107,7 +107,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         id="weekly_retro",
         replace_existing=True,
     )
-    logger.info("Воскресный ретро запланирован на вс 20:00 UTC")
+    logger.info("Воскресный ретро запланирован на вс 20:00 %s", config.TIMEZONE)
 
     # Ежедневный бэкап БД
     scheduler.add_job(
@@ -169,7 +169,7 @@ async def main() -> None:
     await setup_bot_commands(bot)
 
     # Запускаем планировщик
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
     setup_scheduler(scheduler, bot)
     scheduler.start()
     logger.info("APScheduler запущен")
