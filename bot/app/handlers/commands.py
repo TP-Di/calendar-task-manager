@@ -533,32 +533,17 @@ async def cmd_clear(message: Message) -> None:
 
 @router.message(Command("heatmap"))
 async def cmd_heatmap(message: Message) -> None:
-    """/heatmap [+N] — расписание на неделю. +N = через N недель (например /heatmap +2)."""
+    """Показывает тепловую карту расписания на текущую неделю (Пн–Вс)."""
     from zoneinfo import ZoneInfo
-
-    # Парсим аргумент: /heatmap +2  или /heatmap 2  или /heatmap
-    raw = (message.text or "").split(maxsplit=1)
-    week_offset = 0
-    if len(raw) > 1:
-        arg = raw[1].lstrip("+").strip()
-        if arg.lstrip("-").isdigit():
-            week_offset = int(arg)
 
     tz = ZoneInfo(config.TIMEZONE)
     now_local = datetime.now(tz)
-    # Всегда начинаем с понедельника нужной недели
-    monday = (now_local - timedelta(days=now_local.weekday())).replace(
+    fetch_start = (now_local - timedelta(days=now_local.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
-    fetch_start = monday + timedelta(weeks=week_offset)
-    fetch_end   = fetch_start + timedelta(days=7)
+    fetch_end = fetch_start + timedelta(days=7)
 
-    week_label = (
-        "текущая неделя" if week_offset == 0
-        else f"через {week_offset} нед." if week_offset > 0
-        else f"{abs(week_offset)} нед. назад"
-    )
-    await message.answer(f"⏳ Строю тепловую карту ({week_label})...")
+    await message.answer("⏳ Строю тепловую карту...")
 
     try:
         events = await cal.get_events(fetch_start.isoformat(), fetch_end.isoformat())
@@ -568,7 +553,9 @@ async def cmd_heatmap(message: Message) -> None:
         return
 
     try:
-        img_bytes = await _generate_heatmap_image(events, config.TIMEZONE, week_start=fetch_start)
+        img_bytes = await _generate_heatmap_image(
+            events, config.TIMEZONE, week_start=fetch_start
+        )
     except Exception as e:
         logger.error("Ошибка генерации heatmap: %s", e)
         await message.answer(f"❌ Ошибка генерации графика: {e}")
