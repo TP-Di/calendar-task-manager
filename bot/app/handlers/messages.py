@@ -59,10 +59,16 @@ async def handle_agent_response(
         # Сохраняем pending для последующего подтверждения
         _pending_confirmations[user_id] = pending
 
-        # Формируем описание действия
-        tool_name = pending.get("tool_name", "")
-        tool_args = pending.get("tool_args", {})
-        description = _describe_tool_action(tool_name, tool_args)
+        # Формируем описание действия (батч или одиночное)
+        tools = pending.get("tools") or []
+        if not tools and pending.get("tool_name"):
+            tools = [{"tool_name": pending["tool_name"], "tool_args": pending["tool_args"]}]
+
+        if len(tools) == 1:
+            description = _describe_tool_action(tools[0]["tool_name"], tools[0]["tool_args"])
+        else:
+            parts = [_describe_tool_action(t["tool_name"], t["tool_args"]) for t in tools]
+            description = "\n\n".join(f"*{i+1}.* {p}" for i, p in enumerate(parts))
 
         try:
             await message.answer(
