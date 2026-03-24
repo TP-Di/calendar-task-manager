@@ -187,8 +187,12 @@ def _build_grid_keyboard(
 
 
 def _grid_msg_text(task_title: str, date_str: str) -> str:
+    d = _date.fromisoformat(date_str)
+    wd = _WEEKDAYS_RU[d.weekday()]
+    date_label = f"{d.day:02d}.{d.month:02d} ({wd})"
     return (
-        f"📅 Выбери слоты для *{task_title}*\n\n"
+        f"📅 Выбери слоты для *{task_title}*\n"
+        f"📆 {date_label}\n\n"
         "⬜ свободно  🟡 можно сдвинуть  🔴 нельзя трогать\n"
         "🟢 выбрано (свободный)  🔵 выбрано (сдвинет событие)"
     )
@@ -414,108 +418,129 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
         _grid_sessions[user_id] = session
         return
 
-    await callback.answer()
+    try:
+        await callback.answer()
+    except Exception as _e:
+        logger.warning("callback.answer failed: %s", _e)
+
     try:
         await callback.message.edit_text(
-            callback.message.text + "\n\n⏳ Выполняю...",
+            (callback.message.text or "") + "\n\n⏳ Выполняю...",
             reply_markup=None,
         )
     except Exception:
         pass
 
-    date = session["date"]
-    groups = _contiguous_groups(selected)
-
-    result_lines: list[str] = []
-    rescheduled_ids: set[str] = set()
-
-    # ── Для каждой группы: перепланируем + создаём событие ────────────────
-    orig_pending = session["pending"]
-    orig_tools: list[dict] = orig_pending.get("tools") or []
-    if not orig_tools and orig_pending.get("tool_name"):
-        orig_tools = [{"tool_name": orig_pending["tool_name"],
-                       "tool_args": orig_pending["tool_args"]}]
-
-    soft_events = [e for e in session["events"] if not reschedule_svc.is_hard(e)]
-
-    for g_idx, group in enumerate(groups):
-        new_start_iso = _make_local_iso(date, _slot_to_hhmm(group[0]))
-        new_end_iso   = _make_local_iso(date, _slot_to_hhmm(group[-1] + 1))
-
-        # Перепланирование SOFT конфликтов для этой группы
-        if soft_events:
-            try:
-                actions = reschedule_svc.compute_reschedule(new_start_iso, new_end_iso, soft_events)
-            except Exception as _re:
-                logger.error("compute_reschedule failed: %s", _re)
-                actions = []
-            for action in actions:
-                ev    = action["event"]
-                ev_id = ev.get("id", "")
-                if ev_id in rescheduled_ids:
-                    continue
-                rescheduled_ids.add(ev_id)
-                title = ev.get("title", "?")
-                try:
-                    if action["type"] == "update":
-                        ns, ne = action["new_start"], action["new_end"]
-                        await cal_svc.update_event(ev_id, {"start": ns, "end": ne})
-                        result_lines.append(
-                            f"🔄 *{title}* → {_to_local_hhmm(ns)}–{_to_local_hhmm(ne)}"
-                        )
-                    elif action["type"] == "split":
-                        p1s, p1e = action["part1_start"], action["part1_end"]
-                        p2s, p2e = action["part2_start"], action["part2_end"]
-                        await cal_svc.update_event(ev_id, {"start": p1s, "end": p1e})
-                        await cal_svc.create_event(
-                            title=title,
-                            start=p2s,
-                            end=p2e,
-                            description=ev.get("description", ""),
-                        )
-                        result_lines.append(
-                            f"✂️ *{title}* → {_to_local_hhmm(p1s)}–{_to_local_hhmm(p1e)}"
-                            f" и {_to_local_hhmm(p2s)}–{_to_local_hhmm(p2e)}"
-                        )
-                except Exception as e:
-                    logger.error("Ошибка перепланирования '%s': %s", title, e)
-                    result_lines.append(f"⚠️ Не удалось перенести *{title}*: {e}")
-
-        # Создаём задачу/событие для этой группы
-        pending = copy.deepcopy(orig_pending)
-        mod_tools = copy.deepcopy(orig_tools)
-
-        suffix = f" {g_idx + 1}" if len(groups) > 1 else ""
-        for t in mod_tools:
-            if t["tool_name"] == "create_task":
-                t["tool_args"]["start_time"] = new_start_iso
-                t["tool_args"]["end_time"]   = new_end_iso
-                if len(groups) > 1:
-                    t["tool_args"]["title"] = t["tool_args"].get("title", "") + suffix
-            elif t["tool_name"] == "create_event":
-                t["tool_args"]["start"] = new_start_iso
-                t["tool_args"]["end"]   = new_end_iso
-                if len(groups) > 1:
-                    t["tool_args"]["title"] = t["tool_args"].get("title", "") + suffix
-
-        if pending.get("tools"):
-            pending["tools"] = mod_tools
-        elif mod_tools:
-            pending["tool_name"] = mod_tools[0]["tool_name"]
-            pending["tool_args"] = mod_tools[0]["tool_args"]
-
+    async def _send_result(text: str) -> None:
         try:
-            task_result = await execute_pending_tool(pending)
-            result_lines.append(task_result)
-        except Exception as e:
-            logger.error("Ошибка создания задачи (группа %d): %s", g_idx, e)
-            result_lines.append(f"❌ Ошибка создания задачи: {e}")
+            await callback.message.answer(text, parse_mode="Markdown")
+        except Exception:
+            try:
+                await callback.message.answer(text, parse_mode=None)
+            except Exception as _e:
+                logger.error("Не удалось отправить результат: %s | текст: %s", _e, text[:200])
 
-    final = "\n".join(result_lines) or "✅ Готово."
     try:
-        await callback.message.answer(final, parse_mode="Markdown")
-    except Exception:
-        await callback.message.answer(final, parse_mode=None)
+        date = session["date"]
+        groups = _contiguous_groups(selected)
+        logger.info("grid_confirm: user=%s date=%s groups=%s", user_id, date, groups)
+
+        result_lines: list[str] = []
+        rescheduled_ids: set[str] = set()
+
+        orig_pending = session["pending"]
+        orig_tools: list[dict] = orig_pending.get("tools") or []
+        if not orig_tools and orig_pending.get("tool_name"):
+            orig_tools = [{"tool_name": orig_pending["tool_name"],
+                           "tool_args": orig_pending["tool_args"]}]
+
+        if not orig_tools:
+            logger.error("grid_confirm: orig_tools is empty, pending=%s", orig_pending)
+            await _send_result("❌ Внутренняя ошибка: не найдены инструменты в сессии.")
+            return
+
+        soft_events = [e for e in session["events"] if not reschedule_svc.is_hard(e)]
+
+        for g_idx, group in enumerate(groups):
+            new_start_iso = _make_local_iso(date, _slot_to_hhmm(group[0]))
+            new_end_iso   = _make_local_iso(date, _slot_to_hhmm(group[-1] + 1))
+            logger.info("group %d: %s – %s", g_idx, new_start_iso, new_end_iso)
+
+            # Перепланирование SOFT конфликтов для этой группы
+            if soft_events:
+                try:
+                    actions = reschedule_svc.compute_reschedule(new_start_iso, new_end_iso, soft_events)
+                except Exception as _re:
+                    logger.error("compute_reschedule failed: %s", _re)
+                    actions = []
+                for action in actions:
+                    ev    = action["event"]
+                    ev_id = ev.get("id", "")
+                    if ev_id in rescheduled_ids:
+                        continue
+                    rescheduled_ids.add(ev_id)
+                    title = ev.get("title", "?")
+                    try:
+                        if action["type"] == "update":
+                            ns, ne = action["new_start"], action["new_end"]
+                            await cal_svc.update_event(ev_id, {"start": ns, "end": ne})
+                            result_lines.append(
+                                f"🔄 *{title}* → {_to_local_hhmm(ns)}–{_to_local_hhmm(ne)}"
+                            )
+                        elif action["type"] == "split":
+                            p1s, p1e = action["part1_start"], action["part1_end"]
+                            p2s, p2e = action["part2_start"], action["part2_end"]
+                            await cal_svc.update_event(ev_id, {"start": p1s, "end": p1e})
+                            await cal_svc.create_event(
+                                title=title, start=p2s, end=p2e,
+                                description=ev.get("description", ""),
+                            )
+                            result_lines.append(
+                                f"✂️ *{title}* → {_to_local_hhmm(p1s)}–{_to_local_hhmm(p1e)}"
+                                f" и {_to_local_hhmm(p2s)}–{_to_local_hhmm(p2e)}"
+                            )
+                    except Exception as e:
+                        logger.error("Ошибка перепланирования '%s': %s", title, e)
+                        result_lines.append(f"⚠️ Не удалось перенести *{title}*: {e}")
+
+            # Создаём задачу/событие для этой группы
+            pending = copy.deepcopy(orig_pending)
+            mod_tools = copy.deepcopy(orig_tools)
+
+            suffix = f" {g_idx + 1}" if len(groups) > 1 else ""
+            for t in mod_tools:
+                if t["tool_name"] == "create_task":
+                    t["tool_args"]["start_time"] = new_start_iso
+                    t["tool_args"]["end_time"]   = new_end_iso
+                    if suffix:
+                        t["tool_args"]["title"] = t["tool_args"].get("title", "") + suffix
+                elif t["tool_name"] == "create_event":
+                    t["tool_args"]["start"] = new_start_iso
+                    t["tool_args"]["end"]   = new_end_iso
+                    if suffix:
+                        t["tool_args"]["title"] = t["tool_args"].get("title", "") + suffix
+
+            if pending.get("tools"):
+                pending["tools"] = mod_tools
+            else:
+                pending["tool_name"] = mod_tools[0]["tool_name"]
+                pending["tool_args"] = mod_tools[0]["tool_args"]
+
+            logger.info("executing pending tools: %s", [t["tool_name"] for t in mod_tools])
+            try:
+                task_result = await execute_pending_tool(pending)
+                logger.info("task_result: %s", task_result[:100])
+                result_lines.append(task_result)
+            except Exception as e:
+                logger.error("Ошибка создания задачи (группа %d): %s", g_idx, e)
+                result_lines.append(f"❌ Ошибка создания задачи: {e}")
+
+        final = "\n".join(result_lines) or "✅ Готово."
+        await _send_result(final)
+
+    except Exception as _master_err:
+        logger.exception("Неожиданная ошибка в grid_confirm: %s", _master_err)
+        await _send_result(f"❌ Внутренняя ошибка: {_master_err}")
 
 
 @router.callback_query(F.data == "grid_cancel")
