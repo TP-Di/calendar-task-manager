@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from google.auth.transport.requests import Request
@@ -223,3 +224,32 @@ async def update_task(task_id: str, fields: dict) -> dict:
             raise
 
     return await asyncio.to_thread(_update)
+
+
+async def get_recently_completed_tasks(minutes: int = 20) -> list[dict]:
+    """Возвращает задачи, выполненные за последние N минут."""
+
+    def _fetch():
+        try:
+            service = _build_tasks_service()
+            completed_min = (
+                datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = (
+                service.tasks()
+                .list(
+                    tasklist=_DEFAULT_TASKLIST,
+                    showCompleted=True,
+                    showHidden=True,
+                    completedMin=completed_min,
+                    maxResults=50,
+                )
+                .execute()
+            )
+            items = result.get("items", [])
+            return [_format_task(t) for t in items if t.get("status") == "completed"]
+        except HttpError as e:
+            logger.error("Ошибка Tasks API (get_recently_completed_tasks): %s", e)
+            raise
+
+    return await asyncio.to_thread(_fetch)

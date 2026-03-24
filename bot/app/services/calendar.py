@@ -331,6 +331,43 @@ async def delete_event(event_id: str) -> dict:
     return await asyncio.to_thread(_delete)
 
 
+async def find_events_by_title(title: str, date_from: str, date_to: str) -> list[dict]:
+    """
+    Ищет будущие события, у которых summary точно совпадает с title.
+    Использует параметр q (полнотекстовый поиск) для предфильтрации.
+    """
+    import asyncio
+
+    def _fetch():
+        try:
+            service = _build_service()
+            time_min = _to_utc_iso(date_from)
+            time_max = _to_utc_iso(date_to)
+            result = (
+                service.events()
+                .list(
+                    calendarId="primary",
+                    q=title,
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    singleEvents=True,
+                    orderBy="startTime",
+                    maxResults=50,
+                )
+                .execute()
+            )
+            items = result.get("items", [])
+            return [
+                _format_event(e) for e in items
+                if e.get("summary", "") == title
+            ]
+        except HttpError as e:
+            logger.error("Ошибка Calendar API (find_events_by_title): %s", e)
+            raise
+
+    return await asyncio.to_thread(_fetch)
+
+
 def _to_utc_iso(dt_str: str) -> str:
     """
     Приводит строку даты к формату UTC ISO 8601 с Z на конце.

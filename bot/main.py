@@ -17,7 +17,7 @@ from app.db.database import backup_db, init_db
 from app.handlers import commands, documents, messages
 from app.middleware.whitelist import WhitelistMiddleware
 from app.services.briefing import send_briefing, send_weekly_retro
-from app.services.reminders import check_and_send_reminders
+from app.services.reminders import check_and_send_reminders, sync_completed_tasks
 
 # Настройка логирования
 logging.basicConfig(
@@ -83,6 +83,18 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     logger.info(
         "Напоминания настроены с интервалом %d ч", config.REMINDER_INTERVAL_HOURS
     )
+
+    # Синхронизация выполненных задач с календарём (каждые 15 минут)
+    scheduler.add_job(
+        sync_completed_tasks,
+        trigger="interval",
+        minutes=15,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=15),
+        args=[bot],
+        id="task_calendar_sync",
+        replace_existing=True,
+    )
+    logger.info("Синхронизация задач↔календарь каждые 15 мин")
 
     # Воскресный ретро (каждое воскресенье в 20:00 UTC)
     scheduler.add_job(
