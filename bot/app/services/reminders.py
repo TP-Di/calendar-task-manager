@@ -11,6 +11,7 @@ from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.config import config
+import app.services.calendar as cal_svc
 import app.services.tasks as tasks_svc
 
 logger = logging.getLogger(__name__)
@@ -170,3 +171,59 @@ def _format_delta(seconds: float) -> str:
         if hours:
             return f"{days}д {hours}ч"
         return f"{days}д"
+
+
+async def sync_completed_tasks(bot) -> None:
+    """
+    Каждые 15 минут проверяет недавно выполненные задачи и удаляет
+    связанные с ними события-блоки в Google Calendar (📋 <название>).
+    """
+    now = datetime.now(timezone.utc)
+    # Ищем чуть шире интервала (20 мин) чтобы не промахнуться из-за drift
+    try:
+        completed = await tasks_svc.get_recently_completed_tasks(minutes=20)
+    except Exception as e:
+        logger.error("sync_completed_tasks: ошибка получения задач: %s", e)
+        return
+
+    if not completed:
+        return
+
+    # Ищем события в окне ±30 дней от сейчас (прошедшие блоки нас не интересуют)
+    date_from = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    date_to = (now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    deleted_titles: list[str] = []
+
+    for task in completed:
+        title = task.get("title", "").strip()
+        if not title:
+            continue
+        event_title = f"📋 {title}"
+
+        try:
+            events = await cal_svc.find_events_by_title(event_title, date_from, date_to)
+        except Exception as e:
+            logger.error("sync_completed_tasks: ошибка поиска событий для '%s': %s", title, e)
+            continue
+
+        for event in events:
+            try:
+                await cal_svc.delete_event(event["id"])
+                logger.info("sync_completed_tasks: удалено событие '%s' (task: '%s')", event_title, title)
+            except Exception as e:
+                logger.error("sync_completed_tasks: ошибка удаления события '%s': %s", event_title, e)
+
+        if events:
+            deleted_titles.append(title)
+
+    if deleted_titles:
+        lines = ["✅ *Синхронизация:* задачи выполнены, блоки в календаре удалены:"]
+        for t in deleted_titles:
+            lines.append(f"  • {t}")
+        text = "\n".join(lines)
+        for user_id in config.ALLOWED_IDS:
+            try:
+                await bot.send_message(user_id, text, parse_mode="Markdown")
+            except Exception as e:
+                logger.error("sync_completed_tasks: ошибка отправки уведомления: %s", e)
