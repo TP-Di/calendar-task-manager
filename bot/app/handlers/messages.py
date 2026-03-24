@@ -374,7 +374,8 @@ async def handle_grid_day_nav(callback: CallbackQuery) -> None:
 
     try:
         events = await _fetch_day_events(new_date_str)
-    except Exception:
+    except Exception as _e:
+        logger.warning("Не удалось загрузить события для %s: %s", new_date_str, _e)
         events = []
 
     slot_types = _events_to_slot_types(events)
@@ -443,7 +444,11 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
 
         # Перепланирование SOFT конфликтов для этой группы
         if soft_events:
-            actions = reschedule_svc.compute_reschedule(new_start_iso, new_end_iso, soft_events)
+            try:
+                actions = reschedule_svc.compute_reschedule(new_start_iso, new_end_iso, soft_events)
+            except Exception as _re:
+                logger.error("compute_reschedule failed: %s", _re)
+                actions = []
             for action in actions:
                 ev    = action["event"]
                 ev_id = ev.get("id", "")
@@ -506,7 +511,7 @@ async def handle_grid_confirm(callback: CallbackQuery) -> None:
             logger.error("Ошибка создания задачи (группа %d): %s", g_idx, e)
             result_lines.append(f"❌ Ошибка создания задачи: {e}")
 
-    final = "\n".join(result_lines)
+    final = "\n".join(result_lines) or "✅ Готово."
     try:
         await callback.message.answer(final, parse_mode="Markdown")
     except Exception:
