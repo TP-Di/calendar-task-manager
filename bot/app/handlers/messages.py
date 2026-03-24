@@ -17,6 +17,7 @@ from aiogram.types import (
 )
 
 from app.services.agent import execute_pending_tool, run_agent
+import app.services.calendar as cal_svc
 import app.services.tasks as tasks_svc
 
 logger = logging.getLogger(__name__)
@@ -70,15 +71,17 @@ async def handle_agent_response(
             parts = [_describe_tool_action(t["tool_name"], t["tool_args"]) for t in tools]
             description = "\n\n".join(f"*{i+1}.* {p}" for i, p in enumerate(parts))
 
+        conflict_warn = await _build_conflict_warning(tools)
+
         try:
             await message.answer(
-                f"🔔 *Подтверждение действия:*\n\n{description}\n\nВыполнить?",
+                f"🔔 *Подтверждение действия:*\n\n{description}{conflict_warn}\n\nВыполнить?",
                 parse_mode="Markdown",
                 reply_markup=_make_confirm_keyboard(description),
             )
         except Exception:
             await message.answer(
-                f"🔔 Подтверждение действия:\n\n{description}\n\nВыполнить?",
+                f"🔔 Подтверждение действия:\n\n{description}{conflict_warn}\n\nВыполнить?",
                 reply_markup=_make_confirm_keyboard(description),
             )
     else:
@@ -88,6 +91,41 @@ async def handle_agent_response(
         except Exception:
             # Если Markdown не парсится — отправляем как plain text
             await message.answer(response, parse_mode=None)
+
+
+async def _build_conflict_warning(tools: list[dict]) -> str:
+    """Проверяет конфликты для инструментов с временным слотом.
+    Возвращает строку-предупреждение или пустую строку."""
+    # Ищем первый инструмент с временным слотом
+    start_iso = end_iso = None
+    for t in tools:
+        name, args = t["tool_name"], t["tool_args"]
+        if name == "create_task" and args.get("start_time") and args.get("end_time"):
+            start_iso, end_iso = args["start_time"], args["end_time"]
+            break
+        if name == "create_event" and args.get("start") and args.get("end"):
+            start_iso, end_iso = args["start"], args["end"]
+            break
+
+    if not start_iso or not end_iso:
+        return ""
+
+    try:
+        events = await cal_svc.get_events(start_iso, end_iso)
+    except Exception:
+        return ""
+
+    if not events:
+        return ""
+
+    lines = ["\n\n⚠️ *Уже занято в это время:*"]
+    for ev in events:
+        title = ev.get("title", "?")
+        s = ev.get("start", "")
+        e = ev.get("end", "")
+        time_str = f"{s[11:16]}–{e[11:16]}" if len(s) >= 16 and len(e) >= 16 else ""
+        lines.append(f"• {title}" + (f" {time_str}" if time_str else ""))
+    return "\n".join(lines)
 
 
 def _describe_bulk_create(events: list) -> str:
