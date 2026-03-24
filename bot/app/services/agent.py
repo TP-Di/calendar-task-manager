@@ -19,9 +19,18 @@ logger = logging.getLogger(__name__)
 
 
 def _is_placeholder(value: str) -> bool:
-    """Возвращает True, если значение выглядит как плейсхолдер (например <task_id>)."""
+    """Возвращает True, если значение выглядит как плейсхолдер, а не реальный ID."""
     v = (value or "").strip()
-    return v.startswith("<") and v.endswith(">")
+    # <task_id>, <id>, ...
+    if v.startswith("<") and v.endswith(">"):
+        return True
+    # ${get_tasks()[0].id}, ${task_id}, ...
+    if v.startswith("${") and v.endswith("}"):
+        return True
+    # {task_id}, {id}
+    if v.startswith("{") and v.endswith("}"):
+        return True
+    return False
 
 
 # Системный промпт агента
