@@ -45,7 +45,7 @@ _WEEKDAYS_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 # ─── Timezone helpers ──────────────────────────────────────────────────────────
 
 def _app_tz() -> _zi.ZoneInfo:
-    from app import config
+    from app.config import config
     return _zi.ZoneInfo(config.TIMEZONE)
 
 
