@@ -3,6 +3,7 @@
 Также обрабатывает inline-кнопки подтверждения и snooze.
 """
 
+import asyncio
 import json
 import logging
 
@@ -325,7 +326,12 @@ async def handle_text_message(message: Message) -> None:
     thinking_msg = await message.answer("🤔 Думаю...")
 
     try:
-        response = await run_agent(user_id, user_text)
+        response = await asyncio.wait_for(run_agent(user_id, user_text), timeout=90.0)
+    except asyncio.TimeoutError:
+        logger.error("Таймаут агента для user_id=%s", user_id)
+        await thinking_msg.delete()
+        await message.answer("⏱ Запрос занял слишком долго. Попробуй ещё раз или /clear для сброса истории.")
+        return
     except Exception as e:
         logger.error("Ошибка агента для user_id=%s: %s", user_id, e)
         await thinking_msg.delete()
