@@ -298,26 +298,21 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     })
                     break  # Выходим из inner for-loop, outer for-loop сделает retry
 
-                # Защита: complete/delete/update_task без task_id → форсируем get_tasks
-                _tid = tool_args.get("task_id", "")
-                if tool_name in ("complete_task", "delete_task", "update_task") and (not _tid or _is_placeholder(_tid)):
-                    logger.warning(
-                        "%s вызван без task_id, добавляем ошибку и повторяем итерацию",
-                        tool_name,
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps({
-                            "error": (
-                                f"task_id отсутствует. "
-                                "Сначала вызови get_tasks чтобы найти нужную задачу, "
-                                "возьми её id из результата и передай в "
-                                f"{tool_name}."
-                            )
-                        }, ensure_ascii=False),
-                    })
-                    break
+                # task_id для task-операций опционален — lookup по task_title
+                # происходит в execute_pending_tool через _resolve_task_id.
+                # Проверяем только что task_title не пустой.
+                if tool_name in ("complete_task", "delete_task", "update_task"):
+                    _tid = tool_args.get("task_id", "")
+                    _ttitle = (tool_args.get("task_title") or "").strip()
+                    if _is_placeholder(_tid) and not _ttitle:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({
+                                "error": "task_title не указан. Передай название задачи в поле task_title."
+                            }, ensure_ascii=False),
+                        })
+                        break
 
                 pending = {
                     "tool_name": tool_name,
