@@ -534,14 +534,13 @@ async def cmd_heatmap(message: Message) -> None:
     """Показывает тепловую карту расписания на текущую неделю."""
     await message.answer("⏳ Строю тепловую карту...")
 
-    now = datetime.now(timezone.utc)
-    week_start = (now - timedelta(days=now.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    week_end = week_start + timedelta(days=7)
+    from zoneinfo import ZoneInfo
+    now_local = datetime.now(ZoneInfo(config.TIMEZONE))
+    fetch_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    fetch_end   = fetch_start + timedelta(days=7)
 
     try:
-        events = await cal.get_events(week_start.isoformat(), week_end.isoformat())
+        events = await cal.get_events(fetch_start.isoformat(), fetch_end.isoformat())
     except Exception as e:
         logger.error("Ошибка Calendar API (/heatmap): %s", e)
         await message.answer("❌ Ошибка загрузки событий из Calendar")
@@ -555,7 +554,8 @@ async def cmd_heatmap(message: Message) -> None:
         return
 
     photo = BufferedInputFile(img_bytes, filename="heatmap.png")
+    date_range = f"{fetch_start.strftime('%d.%m')} – {(fetch_end - timedelta(days=1)).strftime('%d.%m')}"
     await message.answer_photo(
         photo,
-        caption="📊 Расписание на текущую неделю\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
+        caption=f"📊 Расписание: {date_range}\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
     )
