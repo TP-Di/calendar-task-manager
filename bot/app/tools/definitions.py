@@ -276,21 +276,22 @@ TOOLS: list[dict] = [
             "name": "complete_task",
             "description": (
                 "Отметить задачу как выполненную в Google Tasks. "
-                "ВСЕГДА требует подтверждения пользователя перед выполнением."
+                "ВСЕГДА требует подтверждения пользователя перед выполнением. "
+                "Передавай task_title — система сама найдёт задачу по названию."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID задачи из Google Tasks",
-                    },
                     "task_title": {
                         "type": "string",
-                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
+                        "description": "Название задачи (полное или частичное). Используется для поиска задачи.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID задачи из результата get_tasks. Опционально — если передан, используется напрямую.",
                     },
                 },
-                "required": ["task_id"],
+                "required": ["task_title"],
             },
         },
     },
@@ -300,21 +301,22 @@ TOOLS: list[dict] = [
             "name": "delete_task",
             "description": (
                 "Удалить задачу из Google Tasks. "
-                "ВСЕГДА требует подтверждения пользователя перед выполнением."
+                "ВСЕГДА требует подтверждения пользователя перед выполнением. "
+                "Передавай task_title — система сама найдёт задачу по названию."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID задачи из Google Tasks",
-                    },
                     "task_title": {
                         "type": "string",
-                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
+                        "description": "Название задачи (полное или частичное). Используется для поиска задачи.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID задачи из результата get_tasks. Опционально — если передан, используется напрямую.",
                     },
                 },
-                "required": ["task_id"],
+                "required": ["task_title"],
             },
         },
     },
@@ -324,18 +326,19 @@ TOOLS: list[dict] = [
             "name": "update_task",
             "description": (
                 "Обновить задачу в Google Tasks (название, дедлайн, описание). "
-                "ВСЕГДА требует подтверждения пользователя перед выполнением."
+                "ВСЕГДА требует подтверждения пользователя перед выполнением. "
+                "Передавай task_title — система сама найдёт задачу по названию."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "ID задачи из Google Tasks",
-                    },
                     "task_title": {
                         "type": "string",
-                        "description": "Название задачи (из предыдущего get_tasks) — только для отображения в диалоге подтверждения.",
+                        "description": "Название задачи (полное или частичное). Используется для поиска задачи.",
+                    },
+                    "task_id": {
+                        "type": "string",
+                        "description": "ID задачи из результата get_tasks. Опционально — если передан, используется напрямую.",
                     },
                     "fields": {
                         "type": "object",
@@ -349,7 +352,7 @@ TOOLS: list[dict] = [
                         },
                     },
                 },
-                "required": ["task_id", "fields"],
+                "required": ["task_title", "fields"],
             },
         },
     },
