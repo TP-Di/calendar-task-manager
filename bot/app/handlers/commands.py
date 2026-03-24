@@ -554,7 +554,8 @@ async def cmd_heatmap(message: Message) -> None:
         return
 
     photo = BufferedInputFile(img_bytes, filename="heatmap.png")
+    date_range = f"{fetch_start.strftime('%d.%m')} – {(fetch_end - timedelta(days=1)).strftime('%d.%m')}"
     await message.answer_photo(
         photo,
-        caption="📊 Расписание на текущую неделю\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
+        caption=f"📊 Расписание: {date_range}\n🔴 нельзя перенести · 🟡 можно перенести · — сейчас",
     )
