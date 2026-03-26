@@ -746,49 +746,69 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
     if tool_name == "bulk_create_events":
         return _describe_bulk_create(tool_args.get("events", []))
 
-    if tool_name == "update_event":
-        name = tool_args.get("event_title") or tool_args.get("event_id", "")
-        orig = f" ({_fmt_iso(tool_args['event_start'])})" if tool_args.get("event_start") else ""
-        return f"Обновить событие: *{name}*{orig}\n{_fmt_fields(tool_args.get('fields', {}))}"
+    _VERBS = {
+        "create_event":   "Создать событие",
+        "update_event":   "Обновить событие",
+        "delete_event":   "Удалить событие",
+        "create_task":    "Создать задачу",
+        "complete_task":  "Отметить выполненной",
+        "delete_task":    "Удалить задачу",
+        "update_task":    "Обновить задачу",
+    }
+    verb = _VERBS.get(tool_name, f"Выполнить: {tool_name}")
 
-    if tool_name == "delete_event":
-        name = tool_args.get("event_title") or tool_args.get("event_id", "")
-        orig = f" ({_fmt_iso(tool_args['event_start'])})" if tool_args.get("event_start") else ""
-        return f"Удалить событие: *{name}*{orig}"
+    # Изменяемые поля лежат в "fields" для update_*, иначе — в корне args
+    fields = tool_args.get("fields", {})
 
+    def _get(*keys):
+        for k in keys:
+            v = tool_args.get(k) or fields.get(k)
+            if v:
+                return v
+        return None
+
+    is_event = tool_name in ("create_event", "update_event", "delete_event")
+    is_task  = tool_name in ("create_task", "update_task", "delete_task", "complete_task")
+
+    event_title = _get("title", "event_title") if is_event else None
+    task_title  = _get("task_title", "title")  if is_task  else None
+
+    start    = _get("start", "start_time")
+    end      = _get("end",   "end_time")
+    due      = _get("due")
+    event_id = _get("event_id")
+    task_id  = _get("task_id")
+    desc     = _get("description")
+
+    # Первая строка — глагол + главное имя
+    primary = event_title or task_title or ""
+    lines   = [f"{verb}: *{primary}*"]
+
+    # Порядок: событие / задача / начало / конец / дедлайн / IDs / описание
+    if event_title and task_title:          # create_task создаёт и событие и задачу
+        lines.append(f"Событие: {event_title}")
+        lines.append(f"Задача: {task_title}")
+    if start:
+        lines.append(f"Начало: {_fmt_iso(start)}")
+    if end:
+        lines.append(f"Конец: {_fmt_iso(end)}")
+    if due:
+        lines.append(f"Дедлайн: {_fmt_iso(due)}")
+    ids = []
+    if event_id:
+        ids.append(f"event {event_id}")
+    if task_id:
+        ids.append(f"task {task_id}")
+    if ids:
+        lines.append(f"ID: {', '.join(ids)}")
+    if desc:
+        lines.append(f"Описание: {desc}")
+
+    # Доп. поля только для create_event
     if tool_name == "create_event":
-        start    = _fmt_iso(tool_args.get("start", ""))
-        end_time = tool_args.get("end", "")[11:16]
-        lines = [f"Создать событие: *{tool_args.get('title', '')}*",
-                 f"Время: {start} – {end_time}"]
         if tool_args.get("recurrence"):
             lines.append(f"Повторение: {tool_args['recurrence'][0].replace('RRULE:', '')}")
         if tool_args.get("reminder_minutes") is not None:
             lines.append(f"Напоминание: за {tool_args['reminder_minutes']} мин")
-        if tool_args.get("description"):
-            lines.append(f"Описание: {tool_args['description']}")
-        return "\n".join(lines)
 
-    if tool_name == "create_task":
-        title = tool_args.get("title", "")
-        lines = [f"Создать задачу: *{title}*"]
-        if tool_args.get("start_time"):
-            end_t = tool_args.get("end_time", "")
-            sep   = f" – {_fmt_iso(end_t)}" if end_t else ""
-            lines.append(f"📅 Блок в календаре: {_fmt_iso(tool_args['start_time'])}{sep}")
-        if tool_args.get("due"):
-            lines.append(f"✅ Дедлайн: {_fmt_iso(tool_args['due'])}")
-        if tool_args.get("description"):
-            lines.append(f"Описание: {tool_args['description']}")
-        return "\n".join(lines)
-
-    if tool_name in ("complete_task", "delete_task"):
-        name = tool_args.get("task_title") or tool_args.get("task_id", "")
-        verb = "Отметить выполненной" if tool_name == "complete_task" else "Удалить задачу"
-        return f"{verb}: *{name}*"
-
-    if tool_name == "update_task":
-        name = tool_args.get("task_title") or tool_args.get("task_id", "")
-        return f"Обновить задачу: *{name}*\n{_fmt_fields(tool_args.get('fields', {}))}"
-
-    return f"Выполнить: {tool_name}({tool_args})"
+    return "\n".join(lines)
