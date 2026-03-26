@@ -5,6 +5,7 @@
 import io
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -254,7 +255,7 @@ async def btn_heatmap(message: Message) -> None:
 @router.message(F.text == "🗓 Что сегодня?")
 async def btn_today(message: Message) -> None:
     """Показывает события на сегодня."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     day_end = now.replace(hour=23, minute=59, second=59)
     try:
         events = await cal.get_events(now.isoformat(), day_end.isoformat())
@@ -289,7 +290,7 @@ async def btn_tasks(message: Message) -> None:
     if not tasks:
         await message.answer("Активных задач нет ✅")
         return
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     lines = ["*📋 Активные задачи:*"]
     for t in tasks[:15]:
         due = t.get("due", "")
@@ -331,7 +332,7 @@ async def cmd_status(message: Message) -> None:
     user_id = message.from_user.id
     await message.answer("⏳ Загружаю данные...")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     three_days_later = today_start + timedelta(days=3)
 
@@ -406,7 +407,7 @@ async def cmd_load(message: Message) -> None:
     """Показывает нагрузку (часов событий) на текущую неделю."""
     await message.answer("⏳ Считаю нагрузку...")
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     # Начало текущей недели (понедельник)
     week_start = (now - timedelta(days=now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -534,8 +535,6 @@ async def cmd_clear(message: Message) -> None:
 @router.message(Command("heatmap"))
 async def cmd_heatmap(message: Message) -> None:
     """Расписание: сегодня + 6 дней вперёд."""
-    from zoneinfo import ZoneInfo
-
     tz = ZoneInfo(config.TIMEZONE)
     now_local = datetime.now(tz)
     today = now_local.replace(hour=0, minute=0, second=0, microsecond=0)

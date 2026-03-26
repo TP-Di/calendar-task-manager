@@ -70,7 +70,7 @@ async def check_and_send_reminders(bot: Bot) -> None:
         logger.debug("Тихие часы, напоминания пропущены")
         return
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(zoneinfo.ZoneInfo(config.TIMEZONE))
 
     try:
         active_tasks = await tasks_svc.get_tasks()
@@ -122,7 +122,7 @@ async def check_and_send_reminders(bot: Bot) -> None:
         text = (
             f"{urgency}\n"
             f"📋 *{title}*\n"
-            f"Дедлайн: {due_dt.strftime('%d.%m.%Y %H:%M')} UTC ({time_text})"
+            f"Дедлайн: {due_dt.astimezone(zoneinfo.ZoneInfo(config.TIMEZONE)).strftime('%d.%m.%Y %H:%M')} ({time_text})"
         )
 
         keyboard = _make_snooze_keyboard(task_id) if task_id else None
@@ -175,11 +175,13 @@ def _format_delta(seconds: float) -> str:
 
 async def sync_completed_tasks(bot) -> None:
     """
-    Каждые 15 минут проверяет недавно выполненные задачи и удаляет
-    связанные с ними события-блоки в Google Calendar (📋 <название>).
+    Каждые 15 минут проверяет недавно выполненные задачи и сжимает
+    связанные с ними события-блоки в Google Calendar (📋 <название>)
+    до текущего момента (end = now), вместо удаления.
     """
-    now = datetime.now(timezone.utc)
-    # Ищем чуть шире интервала (20 мин) чтобы не промахнуться из-за drift
+    now = datetime.now(zoneinfo.ZoneInfo(config.TIMEZONE))
+    now_iso = now.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     try:
         completed = await tasks_svc.get_recently_completed_tasks(minutes=20)
     except Exception as e:
@@ -189,11 +191,10 @@ async def sync_completed_tasks(bot) -> None:
     if not completed:
         return
 
-    # Ищем события в окне ±30 дней от сейчас (прошедшие блоки нас не интересуют)
-    date_from = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    date_to = (now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Ищем события начавшиеся за последние 24 часа и до сейчас
+    date_from = (now - timedelta(hours=24)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    deleted_titles: list[str] = []
+    updated_titles: list[str] = []
 
     for task in completed:
         title = task.get("title", "").strip()
@@ -202,24 +203,28 @@ async def sync_completed_tasks(bot) -> None:
         event_title = f"📋 {title}"
 
         try:
-            events = await cal_svc.find_events_by_title(event_title, date_from, date_to)
+            events = await cal_svc.find_events_by_title(event_title, date_from, now_iso)
         except Exception as e:
             logger.error("sync_completed_tasks: ошибка поиска событий для '%s': %s", title, e)
             continue
 
         for event in events:
+            event_start = event.get("start", "")
+            # Не трогаем события которые ещё не начались или уже закончились до сейчас
+            if not event_start or event_start > now_iso:
+                continue
             try:
-                await cal_svc.delete_event(event["id"])
-                logger.info("sync_completed_tasks: удалено событие '%s' (task: '%s')", event_title, title)
+                await cal_svc.update_event(event["id"], {"end": now_iso})
+                logger.info("sync_completed_tasks: сжато событие '%s' до %s", event_title, now_iso)
             except Exception as e:
-                logger.error("sync_completed_tasks: ошибка удаления события '%s': %s", event_title, e)
+                logger.error("sync_completed_tasks: ошибка обновления события '%s': %s", event_title, e)
 
         if events:
-            deleted_titles.append(title)
+            updated_titles.append(title)
 
-    if deleted_titles:
-        lines = ["✅ *Синхронизация:* задачи выполнены, блоки в календаре удалены:"]
-        for t in deleted_titles:
+    if updated_titles:
+        lines = ["✅ *Синхронизация:* задачи выполнены, блоки в календаре завершены:"]
+        for t in updated_titles:
             lines.append(f"  • {t}")
         text = "\n".join(lines)
         for user_id in config.ALLOWED_IDS:
