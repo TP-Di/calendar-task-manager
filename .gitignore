@@ -36,3 +36,9 @@ htmlcov/
 
 # macOS
 .DS_Store
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Runtime data
+bot/data/pending.json

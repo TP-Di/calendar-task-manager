@@ -4,7 +4,7 @@
 
 Персональный бот-планировщик с AI-агентом. Управляет Google Calendar и Google Tasks через чат на естественном языке.
 
-**Стек:** Python 3.11 · aiogram 3 · Groq (llama-4-maverick) · Google Calendar/Tasks API · aiosqlite · APScheduler · Docker
+**Стек:** Python 3.11 · aiogram 3 · Groq (meta-llama/llama-4-scout-17b-16e-instruct) · Google Calendar/Tasks API · aiosqlite · APScheduler · Docker
 
 ---
 
