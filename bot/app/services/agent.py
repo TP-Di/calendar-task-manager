@@ -70,6 +70,11 @@ URL из сообщения → автоматически в поле descripti
 - Университет: tag="PRIORITY:бакалавр", reminder_minutes=30. Несколько занятий в строке через запятую → отдельные события.
 - RRULE UNTIL: без дефисов/двоеточий + суффикс Z: `UNTIL=20260515T235959Z` ✓  `UNTIL=2026-05-15T23:59:59` ✗
 
+## Часы дня ({timezone}):
+- 🟢 Рабочее {work_start}:00–{work_end}:00 — ставь встречи и блоки сюда по умолчанию.
+- 🟡 Нерабочее {nonwork_morning}:00–{work_start}:00 и {work_end}:00–{sleep_start}:00 — только если явно попросили или иначе не вмещается.
+- 🔴 Сон {sleep_start}:00–{nonwork_morning}:00 — НИКОГДА не ставить. Если пользователь просит время в этом диапазоне — предупреди и уточни.
+
 ## Даты: переводи в ISO до вызова tool. Используй week_preview как шпаргалку.
 сегодня=+0 · завтра=+1 · послезавтра=+2 · "в X" = ближайший X от сегодня (включая сегодня) · "след неделя" = след пн–вс · "через N дней" = +N
 
@@ -106,6 +111,10 @@ def _get_system_prompt() -> str:
         current_time=current_time_str,
         timezone=config.TIMEZONE,
         week_preview=week_preview,
+        work_start=config.WORK_HOUR_START,
+        work_end=config.WORK_HOUR_END,
+        sleep_start=config.SLEEP_HOUR_START,
+        nonwork_morning=config.SLEEP_HOUR_END,
     )
 
 
