@@ -7,7 +7,7 @@ import json
 import logging
 from datetime import datetime, timezone, timedelta
 
-from groq import AsyncGroq
+from openai import AsyncOpenAI
 
 from app.config import config
 from app.db.database import add_message, get_history
@@ -118,6 +118,32 @@ def _get_system_prompt() -> str:
     )
 
 
+_PROVIDERS = {
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1",
+        "api_key":  lambda: config.GROQ_API_KEY,
+        "model":    lambda: config.GROQ_MODEL,
+    },
+    "google": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "api_key":  lambda: config.GOOGLE_AI_KEY,
+        "model":    lambda: config.GOOGLE_AI_MODEL,
+    },
+}
+
+
+def _build_llm_client() -> tuple[AsyncOpenAI, str]:
+    """Возвращает (client, model) для текущего провайдера."""
+    provider = config.LLM_PROVIDER.lower()
+    cfg = _PROVIDERS.get(provider, _PROVIDERS["groq"])
+    client = AsyncOpenAI(
+        api_key=cfg["api_key"](),
+        base_url=cfg["base_url"],
+        timeout=30.0,
+    )
+    return client, cfg["model"]()
+
+
 async def _create_task_dispatch(args: dict) -> dict:
     """
     Если переданы start_time + end_time — создаёт календарный блок (📋 событие SOFT)
@@ -190,7 +216,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
     Если агент запрашивает модифицирующий tool — возвращает специальный
     маркер вида: PENDING_TOOL::<json> для последующего подтверждения.
     """
-    client = AsyncGroq(api_key=config.GROQ_API_KEY, timeout=30.0)
+    client, model = _build_llm_client()
 
     # Сохраняем сообщение пользователя в историю
     await add_message(user_id, "user", user_message)
@@ -205,7 +231,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
     for iteration in range(5):
         try:
             response = await client.chat.completions.create(
-                model=config.GROQ_MODEL,
+                model=model,
                 messages=messages,
                 tools=TOOLS,
                 tool_choice="auto",
@@ -214,9 +240,8 @@ async def run_agent(user_id: int, user_message: str) -> str:
             )
         except Exception as e:
             err_str = str(e)
-            # Groq tool_use_failed: LLM сгенерировал невалидный tool call.
-            # Добавляем подсказку в контекст и повторяем итерацию.
-            if "tool_use_failed" in err_str or "failedgeneration" in err_str:
+            # LLM сгенерировал невалидный tool call — добавляем подсказку и повторяем.
+            if "tool_use_failed" in err_str or "failedgeneration" in err_str or "invalid_function_call" in err_str:
                 logger.warning("Groq tool_use_failed на итерации %d, retry с подсказкой", iteration)
                 messages.append({
                     "role": "user",
@@ -227,7 +252,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     ),
                 })
                 continue
-            logger.error("Ошибка Groq API: %s", e)
+            logger.error("Ошибка LLM API (%s): %s", config.LLM_PROVIDER, e)
             return f"Ошибка при обращении к AI: {e}"
 
         choice = response.choices[0]
