@@ -32,8 +32,12 @@ class Config:
     # Расписание
     BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "06:00")  # HH:MM локального времени (TIMEZONE)
     REMINDER_INTERVAL_HOURS: int = int(os.getenv("REMINDER_INTERVAL_HOURS", "1"))
-    QUIET_HOUR_START: int = int(os.getenv("QUIET_HOUR_START", "23"))
-    QUIET_HOUR_END: int = int(os.getenv("QUIET_HOUR_END", "6"))
+    # Рабочие часы (для агента и подсказок)
+    WORK_HOUR_START: int = int(os.getenv("WORK_HOUR_START", "9"))
+    WORK_HOUR_END:   int = int(os.getenv("WORK_HOUR_END",   "20"))
+    # Часы сна — никогда не ставить встречи + тихий режим напоминаний
+    SLEEP_HOUR_START: int = int(os.getenv("SLEEP_HOUR_START", "22"))
+    SLEEP_HOUR_END:   int = int(os.getenv("SLEEP_HOUR_END",   "7"))
 
     # База данных
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

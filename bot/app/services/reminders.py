@@ -18,21 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 def _is_quiet_hours() -> bool:
-    """Проверяет, находимся ли мы в тихих часах (в локальной временной зоне)."""
+    """Проверяет, находимся ли мы в часах сна (тихий режим напоминаний)."""
     try:
         tz = zoneinfo.ZoneInfo(config.TIMEZONE)
     except Exception:
         tz = timezone.utc
-    now = datetime.now(tz)
-    hour = now.hour
-    start = config.QUIET_HOUR_START
-    end = config.QUIET_HOUR_END
-
-    if start > end:
-        # Ночной период переходит через полночь (например, 23:00–06:00)
-        return hour >= start or hour < end
-    else:
-        return start <= hour < end
+    hour = datetime.now(tz).hour
+    s, e = config.SLEEP_HOUR_START, config.SLEEP_HOUR_END
+    # Период сна переходит через полночь (например, 22:00–07:00)
+    if s > e:
+        return hour >= s or hour < e
+    return s <= hour < e
 
 
 def _make_snooze_keyboard(task_id: str) -> InlineKeyboardMarkup:
