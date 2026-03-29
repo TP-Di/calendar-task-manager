@@ -65,7 +65,10 @@ async def get_tasks() -> list[dict]:
                 .execute()
             )
             items = result.get("items", [])
-            return [_format_task(t) for t in items]
+            return [
+                _format_task(t) for t in items
+                if t.get("status") == "needsAction"
+            ]
         except HttpError as e:
             logger.error("Ошибка Tasks API (get_tasks): %s", e)
             raise
