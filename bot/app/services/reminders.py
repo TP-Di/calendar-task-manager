@@ -93,9 +93,11 @@ async def check_and_send_reminders(bot: Bot) -> None:
 
         # Определяем уровень эскалации
         if total_seconds < 0:
-            # Просрочено
+            # Просрочено — не чаще одного раза в сутки
             urgency = "⚠️ ПРОСРОЧЕНО"
-            should_remind = True
+            overdue_sec = abs(total_seconds)
+            interval_sec = config.REMINDER_INTERVAL_HOURS * 3600
+            should_remind = (overdue_sec % 86400) < interval_sec
         elif total_seconds <= 3600:  # За 1 час
             urgency = "🔴 Осталось менее 1 часа"
             should_remind = True
