@@ -5,7 +5,7 @@ AI агент на базе Groq API с tool calling.
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from groq import AsyncGroq
 
@@ -17,82 +17,70 @@ import app.services.tasks as tasks_svc
 
 logger = logging.getLogger(__name__)
 
+
+def _is_placeholder(value: str) -> bool:
+    """Возвращает True, если значение выглядит как плейсхолдер, а не реальный ID."""
+    v = (value or "").strip()
+    # <task_id>, <id>, ...
+    if v.startswith("<") and v.endswith(">"):
+        return True
+    # ${get_tasks()[0].id}, ${task_id}, ...
+    if v.startswith("${") and v.endswith("}"):
+        return True
+    # {task_id}, {id}
+    if v.startswith("{") and v.endswith("}"):
+        return True
+    return False
+
+
 # Системный промпт агента
-SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик. Помогаешь управлять расписанием и задачами через Google Calendar и Google Tasks.
+SYSTEM_PROMPT = """Ты — персональный ИИ-планировщик (Google Calendar + Google Tasks).
+Сейчас: {current_time} · ТЗ: {timezone} · {week_preview}
+Времена пользователя всегда в {timezone} — передавай КАК ЕСТЬ, без конвертации в UTC.
+URL из сообщения → автоматически в поле description (без вопросов).
 
-## Приоритеты (строго по убыванию):
-1. Бакалавр — самый высокий
-2. Работа — жёсткие временные слоты
-3. Магистратура (IELTS, OMSA)
-4. Проекты
-5. Курсы — самый низкий
+Приоритеты: Бакалавр > Работа > Магистратура > Проекты > Курсы
+Теги: [HARD]=нельзя трогать · [SOFT]=можно двигать · [PRIORITY:x] · [DEPENDS:x]
 
-## Теги событий:
-- [HARD] — НИКОГДА не двигать, не удалять
-- [SOFT] — можно двигать при конфликте
-- [PRIORITY:x] — приоритет из списка
-- [DEPENDS:название] — зависимость от другого события/задачи
+## Правила (строго):
+1. Изменения (create/update/delete) — вызывай tool без текстового описания. Система сама покажет подтверждение.
+2. Чтение (get_events, get_tasks) — выполняй сразу, без подтверждения.
+3. ПЕРЕД create_task/create_event с явным временем — СНАЧАЛА get_events на этот день → проверь конфликты → потом создавай. Исключение: пользователь сказал "несмотря на конфликты".
+4. ПЕРЕД update_event/delete_event — СНАЧАЛА get_events → возьми реальный event_id. Никогда не придумывай ID.
+5. Конфликт: сообщи что пересекается + тег + приоритет. [SOFT] ниже приоритетом → предложи сдвинуть. [HARD] или выше → предложи другой слот. Настаивает → создавай.
 
-## Правила работы:
-1. Для ИЗМЕНЕНИЙ (create/update/delete/bulk_create) — вызывай нужный tool. Система автоматически покажет пользователю диалог подтверждения. НЕ описывай список в тексте — просто вызови tool.
-2. Для delete_event и update_event — СНАЧАЛА вызови get_events чтобы получить реальный event_id, ЗАТЕМ вызывай delete_event/update_event с этим ID. Никогда не придумывай ID.
-3. Для чтения (get_events, get_tasks) — выполняй сразу без подтверждения.
-4. Если есть конфликт — предложи перепланирование снизу вверх по приоритетам. [HARD] не трогать никогда.
-5. Если запрос непонятен — честно скажи об этом, не угадывай.
-6. Отвечай кратко и по делу.
-7. Текущее время: {current_time} (временная зона пользователя: {timezone})
-8. Все времена от пользователя — в его локальной зоне {timezone}. Передавай их в инструменты КАК ЕСТЬ, без конвертации в UTC.
+## Аргументы вызовов:
+- update_event / delete_event: поля event_id (из get_events), event_title, event_start — обязательны.
+- complete_task / delete_task / update_task: передавай task_title — система найдёт по имени. task_id не нужен, не придумывай.
+- create_task с start_time+end_time → автоматически создаётся 📋 блок в Calendar + задача в Tasks.
 
-## Работа с расписанием:
-- Когда пользователь присылает недельное расписание (дни недели → занятия/встречи), используй `bulk_create_events`.
-- Для повторяющихся событий ВСЕГДА используй поле `recurrence` с RRULE вместо создания N отдельных событий.
-- Дата `start` — ПЕРВОЕ вхождение события (дата ближайшего такого дня недели от начала расписания).
-- COUNT=N означает N ВСЕГО вхождений, считая первое. `"RRULE:FREQ=WEEKLY;COUNT=9"` — 9 занятий суммарно.
-- Каждый уникальный день/время — одно событие с recurrence. Не дублируй события отдельными записями на каждую неделю.
-- Для университетских занятий ставь tag="PRIORITY:бакалавр", reminder_minutes=30, аудиторию в description.
-- Не жди команд — понимай намерение из контекста. Фразы "добавь это", "перенеси X на час позже", "удали все пятничные занятия" — выполняй через нужный tool без лишних уточнений.
+## 📋 Задачи-блоки:
+- Имеют ДВА объекта: 📋 событие в Calendar + задача в Tasks. Всегда синхронизируй оба.
+- "Перенеси X" → update_event (после get_events) + update_task.
+- "Удали X" → delete_event + delete_task.
+- После complete_task: если есть 📋 событие → идёт сейчас: update_event(end=now) · в будущем: delete_event · в прошлом: не трогать.
 
-## Формат расписания:
-- Строки вида `ПРЕДМЕТ АУДИТОРИЯ ЧЧ:ММ - ЧЧ:ММ`, например `CD B101 9:30 - 11:00`:
-  - ПРЕДМЕТ (первый токен: CD, MA, IoT, EE…) → поле `title`
-  - АУДИТОРИЯ (второй токен: B101, B209…) → поле `description`
-  - Время → поля `start`/`end` (ISO 8601 с датой соответствующего дня недели)
-- MON=понедельник, TUE=вторник, WED=среда, THU=четверг, FRI=пятница
-- Несколько занятий через запятую в одной строке — создавай отдельное событие на каждое
+## Неоднозначность (нет слова "задача"/"событие"):
+Вызови get_tasks + get_events параллельно → действуй там, где X найдено (или в обоих при 📋).
 
-## Формат RRULE:
-- UNTIL в компактном формате БЕЗ дефисов и двоеточий, с суффиксом Z: `UNTIL=20260515T235959Z`
-- НЕПРАВИЛЬНО: `UNTIL=2026-05-15T23:59:59` — дефисы и двоеточия запрещены в RRULE UNTIL
-- ПРАВИЛЬНО: `UNTIL=20260515T235959Z`
+## Расписание и RRULE:
+- Недельное расписание → bulk_create_events. Каждый уникальный день/время = одно событие с recurrence (не дублируй).
+- start = дата ПЕРВОГО вхождения. COUNT=N = N занятий всего включая первое.
+- Строка: `ПРЕДМЕТ АУДИТОРИЯ ЧЧ:ММ-ЧЧ:ММ` → title / description / start+end. MON/TUE/WED/THU/FRI = пн-пт.
+- Университет: tag="PRIORITY:бакалавр", reminder_minutes=30. Несколько занятий в строке через запятую → отдельные события.
+- RRULE UNTIL: без дефисов/двоеточий + суффикс Z: `UNTIL=20260515T235959Z` ✓  `UNTIL=2026-05-15T23:59:59` ✗
 
-## При вызове update_event и delete_event:
-- После get_events у тебя есть название и время события
-- ВСЕГДА передавай `event_title` и `event_start` в вызов update_event / delete_event
-- Пример: `{{"event_id": "abc123", "event_title": "CD", "event_start": "2026-03-23T09:30:00+05:00", "fields": {{...}}}}`
+## Часы дня ({timezone}):
+- 🟢 Рабочее {work_start}:00–{work_end}:00 — ставь встречи и блоки сюда по умолчанию.
+- 🟡 Нерабочее {nonwork_morning}:00–{work_start}:00 и {work_end}:00–{sleep_start}:00 — только если явно попросили или иначе не вмещается.
+- 🔴 Сон {sleep_start}:00–{nonwork_morning}:00 — НИКОГДА не ставить. Если пользователь просит время в этом диапазоне — предупреди и уточни.
 
-## При вызове complete_task, delete_task и update_task:
-- После get_tasks у тебя есть название задачи
-- ВСЕГДА передавай `task_title` в вызов complete_task / delete_task / update_task
-- Пример: `{{"task_id": "abc123", "task_title": "Изучить Airflow"}}`
+## Даты: переводи в ISO до вызова tool. Используй week_preview как шпаргалку.
+сегодня=+0 · завтра=+1 · послезавтра=+2 · "в X" = ближайший X от сегодня (включая сегодня) · "след неделя" = след пн–вс · "через N дней" = +N
 
-## Планирование задач по времени:
-- Когда пользователь просит "поставить задачу в свободное время" — сначала вызови get_events на нужный день, найди свободные слоты, затем вызови create_task с полями start_time и end_time.
-- Если start_time + end_time указаны, система автоматически создаст и блок в Google Calendar (📋 событие с тегом SOFT), и задачу в Google Tasks.
-- "Свободное время до 19:30" = нет событий в этот период. start_time = конец последнего события (или сейчас), end_time = min(start + нужные часы, 19:30).
-- Если задача не вмещается — создай несколько задач-блоков (несколько вызовов create_task).
-- При просьбе "сократить задачу на X часов" → update_task с новым end_time в fields.
-- При просьбе "создать такую же на оставшееся время" → get_events, create_task с новым слотом.
+## Дедлайн: не упомянут → due = сегодня 23:59:59. "Без дедлайна" → не передавай due. due ≠ время работы (для блока используй start_time/end_time).
 
-## Дедлайн (due) задачи:
-- Если пользователь не упомянул срок сдачи — ставь due = конец текущего дня (HH:MM:SS = 23:59:59).
-- Если пользователь явно сказал "без дедлайна", "дедлайна нет" — НЕ передавай поле due вообще.
-- due — это срок сдачи, НЕ время работы. start_time/end_time — это блок времени в расписании.
-
-## Формат ответа:
-- Для любых изменений (добавить/удалить/изменить) — ТОЛЬКО вызов tool, никакого текстового описания.
-- Никогда не пиши "Мероприятия добавлены" или список дат — это делает система после реального вызова tool.
-- Просроченные задачи выделяй: ⚠️
-"""
+Ответ: кратко. Просроченные задачи: ⚠️ Для изменений — только tool, никакого текстового описания."""
 
 
 def _get_system_prompt() -> str:
@@ -102,8 +90,32 @@ def _get_system_prompt() -> str:
         tz = zoneinfo.ZoneInfo(config.TIMEZONE)
     except Exception:
         tz = timezone.utc
-    now = datetime.now(tz).strftime("%Y-%m-%d %H:%M")
-    return SYSTEM_PROMPT.format(current_time=now, timezone=config.TIMEZONE)
+    now = datetime.now(tz)
+    weekdays_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+    weekdays_short = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+    wd = now.weekday()  # 0=Monday
+
+    # Ближайшие 7 дней с датами для подсказки
+    week_dates = []
+    for i in range(7):
+        d = now + timedelta(days=i)
+        label = "сегодня" if i == 0 else ("завтра" if i == 1 else weekdays_ru[d.weekday()])
+        week_dates.append(f"{weekdays_short[d.weekday()]} {d.strftime('%d.%m')} ({label})")
+
+    current_time_str = (
+        f"{now.strftime('%Y-%m-%d %H:%M')}, "
+        f"{weekdays_ru[wd]} ({weekdays_short[wd]})"
+    )
+    week_preview = ", ".join(week_dates)
+    return SYSTEM_PROMPT.format(
+        current_time=current_time_str,
+        timezone=config.TIMEZONE,
+        week_preview=week_preview,
+        work_start=config.WORK_HOUR_START,
+        work_end=config.WORK_HOUR_END,
+        sleep_start=config.SLEEP_HOUR_START,
+        nonwork_morning=config.SLEEP_HOUR_END,
+    )
 
 
 async def _create_task_dispatch(args: dict) -> dict:
@@ -178,7 +190,7 @@ async def run_agent(user_id: int, user_message: str) -> str:
     Если агент запрашивает модифицирующий tool — возвращает специальный
     маркер вида: PENDING_TOOL::<json> для последующего подтверждения.
     """
-    client = AsyncGroq(api_key=config.GROQ_API_KEY)
+    client = AsyncGroq(api_key=config.GROQ_API_KEY, timeout=30.0)
 
     # Сохраняем сообщение пользователя в историю
     await add_message(user_id, "user", user_message)
@@ -246,7 +258,13 @@ async def run_agent(user_id: int, user_message: str) -> str:
             }
         )
 
-        # Обрабатываем каждый tool call
+        # Обрабатываем каждый tool call.
+        # Read-only инструменты выполняются немедленно.
+        # Write-инструменты (CONFIRMATION_REQUIRED) накапливаются в очередь —
+        # все из одного LLM-ответа показываются пользователю одним батчем.
+        pending_queue: list[dict] = []
+        validation_failed = False
+
         for tool_call in message.tool_calls:
             tool_name = tool_call.function.name
             try:
@@ -256,11 +274,10 @@ async def run_agent(user_id: int, user_message: str) -> str:
 
             logger.info("Tool call: %s(%s)", tool_name, tool_args)
 
-            # Если инструмент требует подтверждения — прерываем цикл
-            # и возвращаем маркер для обработки в handler
             if tool_name in CONFIRMATION_REQUIRED_TOOLS:
                 # Защита: update_event/delete_event без event_id → форсируем get_events
-                if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
+                _eid = tool_args.get("event_id", "")
+                if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
                     logger.warning(
                         "%s вызван без event_id, добавляем ошибку и повторяем итерацию",
                         tool_name,
@@ -277,43 +294,32 @@ async def run_agent(user_id: int, user_message: str) -> str:
                             )
                         }, ensure_ascii=False),
                     })
-                    break  # Выходим из inner for-loop, outer for-loop сделает retry
+                    validation_failed = True
+                    pending_queue.clear()
+                    break  # outer loop сделает retry
 
-                # Защита: complete/delete/update_task без task_id → форсируем get_tasks
-                if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
-                    logger.warning(
-                        "%s вызван без task_id, добавляем ошибку и повторяем итерацию",
-                        tool_name,
-                    )
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps({
-                            "error": (
-                                f"task_id отсутствует. "
-                                "Сначала вызови get_tasks чтобы найти нужную задачу, "
-                                "возьми её id из результата и передай в "
-                                f"{tool_name}."
-                            )
-                        }, ensure_ascii=False),
-                    })
-                    break
+                if tool_name in ("complete_task", "delete_task", "update_task"):
+                    _tid = tool_args.get("task_id", "")
+                    _ttitle = (tool_args.get("task_title") or "").strip()
+                    if _is_placeholder(_tid) and not _ttitle:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps({
+                                "error": "task_title не указан. Передай название задачи в поле task_title."
+                            }, ensure_ascii=False),
+                        })
+                        validation_failed = True
+                        pending_queue.clear()
+                        break
 
-                pending = {
+                # Складываем в очередь, продолжаем обход остальных tool_calls
+                pending_queue.append({
                     "tool_name": tool_name,
                     "tool_args": tool_args,
                     "tool_call_id": tool_call.id,
-                    "messages": messages,
-                    "user_id": user_id,
-                }
-                # Сохраняем нейтральный placeholder, чтобы следующий вызов LLM
-                # не видел незакрытый запрос без ответа ассистента
-                await add_message(
-                    user_id,
-                    "assistant",
-                    "[Ожидаю ответа пользователя]",
-                )
-                return f"PENDING_TOOL::{json.dumps(pending, ensure_ascii=False)}"
+                })
+                continue
 
             # Выполняем read-only tool
             if tool_name in _TOOL_DISPATCH:
@@ -329,7 +335,6 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     ensure_ascii=False,
                 )
 
-            # Добавляем результат tool в messages
             messages.append(
                 {
                     "role": "tool",
@@ -337,6 +342,16 @@ async def run_agent(user_id: int, user_message: str) -> str:
                     "content": tool_result_str,
                 }
             )
+
+        # Если есть накопленные write-инструменты — возвращаем батч на подтверждение
+        if not validation_failed and pending_queue:
+            pending = {
+                "tools": pending_queue,
+                "messages": messages,
+                "user_id": user_id,
+            }
+            await add_message(user_id, "assistant", "[Ожидаю ответа пользователя]")
+            return f"PENDING_TOOL::{json.dumps(pending, ensure_ascii=False)}"
 
     # Превышено число итераций
     fallback = "Не удалось завершить запрос за отведённое число шагов."
@@ -393,39 +408,84 @@ def _format_tool_success(tool_name: str, result) -> str:
     return "✅ Действие выполнено."
 
 
+async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
+    """
+    Если task_id отсутствует или является плейсхолдером — ищет задачу по task_title.
+    Возвращает (обновлённые args, сообщение об ошибке или None).
+    """
+    task_id = tool_args.get("task_id", "")
+    if task_id and not _is_placeholder(task_id):
+        return tool_args, None
+
+    task_title = (tool_args.get("task_title") or "").strip()
+    if not task_title:
+        return tool_args, "❌ Не указано название задачи. Повторите запрос."
+
+    try:
+        tasks = await tasks_svc.get_tasks()
+    except Exception as e:
+        return tool_args, f"❌ Ошибка получения задач: {e}"
+
+    title_lower = task_title.lower()
+    matches = [t for t in tasks if title_lower in t.get("title", "").lower()]
+    if not matches:
+        return tool_args, f"❌ Задача «{task_title}» не найдена среди активных."
+
+    # Точное совпадение предпочтительнее частичного
+    exact = [t for t in matches if t.get("title", "").lower() == title_lower]
+    found = exact[0] if exact else matches[0]
+    return {**tool_args, "task_id": found["id"]}, None
+
+
+async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
+    """Выполняет один подтверждённый tool и возвращает форматированный результат."""
+    _eid = tool_args.get("event_id", "")
+    if tool_name in ("update_event", "delete_event") and (not _eid or _is_placeholder(_eid)):
+        return "❌ event_id некорректный — повторите запрос, я запрошу события автоматически."
+
+    if tool_name in ("complete_task", "delete_task", "update_task"):
+        tool_args, err = await _resolve_task_id(tool_args)
+        if err:
+            return err
+
+    if tool_name not in _TOOL_DISPATCH:
+        return f"❌ Неизвестный инструмент: {tool_name}"
+
+    try:
+        result = await _TOOL_DISPATCH[tool_name](tool_args)
+    except Exception as e:
+        logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
+        return f"❌ Ошибка при выполнении: {e}"
+
+    return _format_tool_success(tool_name, result)
+
+
 async def execute_pending_tool(pending_data: dict) -> str:
     """
-    Выполняет отложенный tool call после подтверждения пользователем.
-    Возвращает форматированный результат без лишнего вызова LLM.
+    Выполняет отложенный tool call (или батч tool calls) после подтверждения.
+    Поддерживает два формата pending_data:
+      - новый: {"tools": [{tool_name, tool_args, tool_call_id}, ...], "user_id": ...}
+      - старый: {"tool_name": ..., "tool_args": ..., "user_id": ...}  (обратная совместимость)
     """
-    tool_name = pending_data["tool_name"]
-    tool_args = pending_data["tool_args"]
     user_id = pending_data["user_id"]
 
-    # Последняя линия защиты: не выполнять update/delete с пустым ID
-    if tool_name in ("update_event", "delete_event") and not tool_args.get("event_id"):
-        error_text = "❌ event_id пустой — повторите запрос, я запрошу события автоматически."
+    # Новый батч-формат
+    tools: list[dict] = pending_data.get("tools") or []
+
+    # Обратная совместимость: старый формат с единственным инструментом
+    if not tools and pending_data.get("tool_name"):
+        tools = [{"tool_name": pending_data["tool_name"], "tool_args": pending_data["tool_args"]}]
+
+    if not tools:
+        error_text = "❌ Внутренняя ошибка: нет инструментов для выполнения."
         await add_message(user_id, "assistant", error_text)
         return error_text
 
-    if tool_name in ("complete_task", "delete_task", "update_task") and not tool_args.get("task_id"):
-        error_text = "❌ task_id пустой — повторите запрос, я запрошу задачи автоматически."
-        await add_message(user_id, "assistant", error_text)
-        return error_text
+    result_lines: list[str] = []
+    for entry in tools:
+        line = await _execute_single_tool(entry["tool_name"], entry["tool_args"])
+        result_lines.append(line)
 
-    if tool_name in _TOOL_DISPATCH:
-        try:
-            result = await _TOOL_DISPATCH[tool_name](tool_args)
-        except Exception as e:
-            logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
-            error_text = f"❌ Ошибка при выполнении: {e}"
-            await add_message(user_id, "assistant", error_text)
-            return error_text
-    else:
-        error_text = f"❌ Неизвестный инструмент: {tool_name}"
-        await add_message(user_id, "assistant", error_text)
-        return error_text
-
-    final_text = _format_tool_success(tool_name, result)
+    final_text = "\n".join(result_lines)
     await add_message(user_id, "assistant", final_text)
     return final_text

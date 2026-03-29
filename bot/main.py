@@ -5,7 +5,7 @@
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -17,7 +17,7 @@ from app.db.database import backup_db, init_db
 from app.handlers import commands, documents, messages
 from app.middleware.whitelist import WhitelistMiddleware
 from app.services.briefing import send_briefing, send_weekly_retro
-from app.services.reminders import check_and_send_reminders
+from app.services.reminders import check_and_send_reminders, sync_completed_tasks
 
 # Настройка логирования
 logging.basicConfig(
@@ -53,23 +53,29 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         briefing_hour, briefing_minute = 8, 0
         logger.warning("Неверный формат BRIEFING_TIME, используется 08:00")
 
-    # Утренний брифинг по расписанию
+    # Утренний брифинг по расписанию (время в локальной зоне пользователя)
     scheduler.add_job(
         send_briefing,
         trigger="cron",
         hour=briefing_hour,
         minute=briefing_minute,
+        timezone=config.TIMEZONE,
         args=[bot],
         id="morning_briefing",
         replace_existing=True,
     )
-    logger.info("Брифинг запланирован на %02d:%02d UTC", briefing_hour, briefing_minute)
+    logger.info(
+        "Брифинг запланирован на %02d:%02d %s", briefing_hour, briefing_minute, config.TIMEZONE
+    )
 
     # Напоминания о дедлайнах (каждые N часов)
+    # next_run_time — откладываем первый запуск, чтобы рестарт контейнера
+    # не вызывал мгновенную отправку уведомлений
     scheduler.add_job(
         check_and_send_reminders,
         trigger="interval",
         hours=config.REMINDER_INTERVAL_HOURS,
+        next_run_time=datetime.now(timezone.utc) + timedelta(hours=config.REMINDER_INTERVAL_HOURS),
         args=[bot],
         id="deadline_reminders",
         replace_existing=True,
@@ -78,7 +84,19 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         "Напоминания настроены с интервалом %d ч", config.REMINDER_INTERVAL_HOURS
     )
 
-    # Воскресный ретро (каждое воскресенье в 20:00 UTC)
+    # Синхронизация выполненных задач с календарём (каждые 15 минут)
+    scheduler.add_job(
+        sync_completed_tasks,
+        trigger="interval",
+        minutes=15,
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=15),
+        args=[bot],
+        id="task_calendar_sync",
+        replace_existing=True,
+    )
+    logger.info("Синхронизация задач↔календарь каждые 15 мин")
+
+    # Воскресный ретро (каждое воскресенье в 20:00 по TIMEZONE)
     scheduler.add_job(
         send_weekly_retro,
         trigger="cron",
@@ -89,7 +107,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
         id="weekly_retro",
         replace_existing=True,
     )
-    logger.info("Воскресный ретро запланирован на вс 20:00 UTC")
+    logger.info("Воскресный ретро запланирован на вс 20:00 %s", config.TIMEZONE)
 
     # Ежедневный бэкап БД
     scheduler.add_job(
@@ -151,7 +169,7 @@ async def main() -> None:
     await setup_bot_commands(bot)
 
     # Запускаем планировщик
-    scheduler = AsyncIOScheduler(timezone="UTC")
+    scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
     setup_scheduler(scheduler, bot)
     scheduler.start()
     logger.info("APScheduler запущен")

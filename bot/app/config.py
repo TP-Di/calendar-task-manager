@@ -19,7 +19,7 @@ class Config:
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct")
 
     # Google — содержимое credentials.json и token.json передаётся строкой JSON
     # GOOGLE_CREDENTIALS_JSON — обязательна (вставить содержимое credentials.json)
@@ -30,10 +30,14 @@ class Config:
     GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "data/token.json")
 
     # Расписание
-    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "08:00")  # HH:MM
+    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "06:00")  # HH:MM локального времени (TIMEZONE)
     REMINDER_INTERVAL_HOURS: int = int(os.getenv("REMINDER_INTERVAL_HOURS", "1"))
-    QUIET_HOUR_START: int = int(os.getenv("QUIET_HOUR_START", "23"))
-    QUIET_HOUR_END: int = int(os.getenv("QUIET_HOUR_END", "6"))
+    # Рабочие часы (для агента и подсказок)
+    WORK_HOUR_START: int = int(os.getenv("WORK_HOUR_START", "9"))
+    WORK_HOUR_END:   int = int(os.getenv("WORK_HOUR_END",   "20"))
+    # Часы сна — никогда не ставить встречи + тихий режим напоминаний
+    SLEEP_HOUR_START: int = int(os.getenv("SLEEP_HOUR_START", "22"))
+    SLEEP_HOUR_END:   int = int(os.getenv("SLEEP_HOUR_END",   "7"))
 
     # База данных
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

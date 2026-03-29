@@ -4,6 +4,7 @@
 
 import logging
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
@@ -62,7 +63,7 @@ def _format_task_line(task: dict, now: datetime) -> str:
 
 async def build_briefing_text() -> str:
     """Формирует текст утреннего брифинга."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     tomorrow_end = today_start + timedelta(days=2)
@@ -179,32 +180,67 @@ async def send_briefing(bot: Bot) -> None:
 
 async def send_weekly_retro(bot: Bot) -> None:
     """
-    Воскресный ретро-брифинг (20:00).
-    Показывает что было сделано за неделю.
+    Воскресный ретро-брифинг (вечер воскресенья по TIMEZONE).
+    Отправляет heatmap прошедшей недели + текстовую статистику.
     """
-    now = datetime.now(timezone.utc)
-    week_start = (now - timedelta(days=7)).replace(hour=0, minute=0, second=0, microsecond=0)
+    from zoneinfo import ZoneInfo
+    from aiogram.types import BufferedInputFile
+    from app.handlers.commands import _generate_heatmap_image
 
-    lines = ["📊 *Недельный ретро*\n"]
+    tz = ZoneInfo(config.TIMEZONE)
+    now_local = datetime.now(tz)
+    # Пн–Вс этой недели
+    week_start = (now_local - timedelta(days=now_local.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    week_end = week_start + timedelta(days=7)
 
     try:
-        week_events = await cal.get_events(week_start.isoformat(), now.isoformat())
-        lines.append(f"*Событий за неделю:* {len(week_events)}")
+        week_events = await cal.get_events(week_start.isoformat(), week_end.isoformat())
     except Exception as e:
         logger.error("Ошибка получения событий для ретро: %s", e)
-        lines.append("Не удалось загрузить события")
+        week_events = []
+
+    # Статистика
+    total_hours = sum(
+        (
+            datetime.fromisoformat(e["end"].replace("Z", "+00:00")) -
+            datetime.fromisoformat(e["start"].replace("Z", "+00:00"))
+        ).total_seconds() / 3600
+        for e in week_events
+        if e.get("start") and e.get("end") and "T" in e.get("start", "")
+    )
 
     try:
         active_tasks = await tasks_svc.get_tasks()
-        lines.append(f"*Активных задач сейчас:* {len(active_tasks)}")
+        tasks_line = f"*Активных задач:* {len(active_tasks)}"
+    except Exception:
+        tasks_line = ""
+
+    date_range = f"{week_start.strftime('%d.%m')} – {(week_end - timedelta(days=1)).strftime('%d.%m')}"
+    caption = (
+        f"📊 *Итоги недели {date_range}*\n"
+        f"*Событий:* {len(week_events)}  •  *Часов:* {total_hours:.1f}ч\n"
+        + (tasks_line + "\n" if tasks_line else "")
+        + "\nХорошей недели! 🚀"
+    )
+
+    # Генерируем heatmap за прошедшую неделю
+    try:
+        img_bytes = await _generate_heatmap_image(
+            week_events, config.TIMEZONE, week_start=week_start
+        )
+        photo = BufferedInputFile(img_bytes, filename="retro.png")
+        for user_id in config.ALLOWED_IDS:
+            try:
+                await bot.send_photo(user_id, photo, caption=caption, parse_mode="Markdown")
+            except Exception as e:
+                logger.error("Ошибка отправки ретро пользователю %s: %s", user_id, e)
     except Exception as e:
-        logger.error("Ошибка получения задач для ретро: %s", e)
-
-    lines.append("\nХорошей недели! 🚀")
-    text = "\n".join(lines)
-
-    for user_id in config.ALLOWED_IDS:
-        try:
-            await bot.send_message(user_id, text, parse_mode="Markdown")
-        except Exception as e:
-            logger.error("Ошибка отправки ретро пользователю %s: %s", user_id, e)
+        logger.error("Ошибка генерации heatmap для ретро: %s", e)
+        # Fallback: только текст
+        for user_id in config.ALLOWED_IDS:
+            try:
+                await bot.send_message(user_id, caption, parse_mode="Markdown")
+            except Exception as ex:
+                logger.error("Ошибка отправки текстового ретро %s: %s", user_id, ex)

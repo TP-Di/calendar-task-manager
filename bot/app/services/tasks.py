@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from google.auth.transport.requests import Request
@@ -19,6 +20,14 @@ logger = logging.getLogger(__name__)
 
 # ID стандартного списка задач
 _DEFAULT_TASKLIST = "@default"
+
+# Поля, разрешённые в теле update-запроса (остальные — read-only)
+_WRITABLE_FIELDS = {"id", "title", "status", "due", "notes", "completed", "parent", "position"}
+
+
+def _clean_task_body(task: dict) -> dict:
+    """Убирает read-only поля из тела задачи перед отправкой update."""
+    return {k: v for k, v in task.items() if k in _WRITABLE_FIELDS}
 
 
 def _build_tasks_service():
@@ -56,7 +65,10 @@ async def get_tasks() -> list[dict]:
                 .execute()
             )
             items = result.get("items", [])
-            return [_format_task(t) for t in items]
+            return [
+                _format_task(t) for t in items
+                if t.get("status") == "needsAction"
+            ]
         except HttpError as e:
             logger.error("Ошибка Tasks API (get_tasks): %s", e)
             raise
@@ -118,7 +130,7 @@ async def complete_task(task_id: str) -> dict:
             task["status"] = "completed"
             updated = (
                 service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=task)
+                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
                 .execute()
             )
             logger.info("Задача выполнена: %s", task_id)
@@ -161,7 +173,17 @@ async def update_task(task_id: str, fields: dict) -> dict:
                 task["title"] = fields["title"]
             if "due" in fields:
                 due = fields["due"]
-                task["due"] = due if due.endswith("Z") else due + "Z"
+                # Убираем timezone-offset (+00:00, +05:00 и т.п.) перед добавлением Z,
+                # иначе получается невалидный вид "...+00:00Z"
+                if not due.endswith("Z"):
+                    # Отрезаем суффикс вида ±HH:MM если есть
+                    for sign in ("+", "-"):
+                        idx = due.rfind(sign, 10)  # ищем только после YYYY-MM-DD
+                        if idx != -1:
+                            due = due[:idx]
+                            break
+                    due += "Z"
+                task["due"] = due
 
             # Обновление блока времени и/или описания в notes
             if "start_time" in fields or "end_time" in fields or "description" in fields:
@@ -195,7 +217,7 @@ async def update_task(task_id: str, fields: dict) -> dict:
 
             updated = (
                 service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=task)
+                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
                 .execute()
             )
             logger.info("Обновлена задача: %s", task_id)
@@ -205,3 +227,32 @@ async def update_task(task_id: str, fields: dict) -> dict:
             raise
 
     return await asyncio.to_thread(_update)
+
+
+async def get_recently_completed_tasks(minutes: int = 20) -> list[dict]:
+    """Возвращает задачи, выполненные за последние N минут."""
+
+    def _fetch():
+        try:
+            service = _build_tasks_service()
+            completed_min = (
+                datetime.now(timezone.utc) - timedelta(minutes=minutes)
+            ).strftime("%Y-%m-%dT%H:%M:%SZ")
+            result = (
+                service.tasks()
+                .list(
+                    tasklist=_DEFAULT_TASKLIST,
+                    showCompleted=True,
+                    showHidden=True,
+                    completedMin=completed_min,
+                    maxResults=50,
+                )
+                .execute()
+            )
+            items = result.get("items", [])
+            return [_format_task(t) for t in items if t.get("status") == "completed"]
+        except HttpError as e:
+            logger.error("Ошибка Tasks API (get_recently_completed_tasks): %s", e)
+            raise
+
+    return await asyncio.to_thread(_fetch)
