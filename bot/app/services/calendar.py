@@ -189,8 +189,9 @@ async def create_event(
             if reminder_minutes is not None:
                 body["reminders"] = {
                     "useDefault": False,
-                    "overrides": [{"method": "popup", "minutes": reminder_minutes}],
+                    "overrides": [{"method": "popup", "minutes": int(reminder_minutes)}],
                 }
+            logger.debug("create_event body: %s", body)
             event = service.events().insert(calendarId="primary", body=body).execute()
             logger.info("Создано событие: %s (%s)", title, event.get("id"))
             return _format_event(event)
