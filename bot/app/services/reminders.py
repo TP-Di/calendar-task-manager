@@ -208,18 +208,26 @@ async def sync_completed_tasks(bot) -> None:
             logger.error("sync_completed_tasks: ошибка поиска событий для '%s': %s", title, e)
             continue
 
+        task_updated = False
         for event in events:
-            event_start = event.get("start", "")
-            # Не трогаем события которые ещё не начались или уже закончились до сейчас
-            if not event_start or event_start > now_iso:
+            raw_start = event.get("start", "")
+            if not raw_start:
+                continue
+            try:
+                ev_start = datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            # Трогаем только события которые уже начались
+            if ev_start > now:
                 continue
             try:
                 await cal_svc.update_event(event["id"], {"end": now_iso})
                 logger.info("sync_completed_tasks: сжато событие '%s' до %s", event_title, now_iso)
+                task_updated = True
             except Exception as e:
                 logger.error("sync_completed_tasks: ошибка обновления события '%s': %s", event_title, e)
 
-        if events:
+        if task_updated:
             updated_titles.append(title)
 
     if updated_titles:
