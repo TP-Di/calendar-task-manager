@@ -33,60 +33,127 @@ class TokenExpiredError(Exception):
     """Google OAuth токен истёк или был отозван. Требуется повторная авторизация."""
 
 
-def _load_token() -> Credentials | None:
-    """
-    Загружает OAuth2 токен:
-    1. Из GOOGLE_TOKEN_JSON (env-переменная с содержимым token.json)
-    2. Из файла GOOGLE_TOKEN_PATH (fallback)
-    """
-    token_json = config.GOOGLE_TOKEN_JSON
-    if token_json:
-        try:
-            return Credentials.from_authorized_user_info(
-                json.loads(token_json), SCOPES
-            )
-        except Exception as e:
-            logger.warning("Не удалось загрузить токен из GOOGLE_TOKEN_JSON: %s", e)
+# In-memory кэш токена — обновляется после refresh или reauth, живёт весь процесс
+_credentials_cache: "Credentials | None" = None
 
+
+def _load_token() -> "Credentials | None":
+    """
+    Загружает OAuth2 токен.
+    Приоритет: файл (может быть обновлён reauth) → GOOGLE_TOKEN_JSON (env, статичный).
+    """
+    # Файл приоритетнее — он обновляется при reauth внутри процесса
     if os.path.exists(config.GOOGLE_TOKEN_PATH):
         try:
             return Credentials.from_authorized_user_file(config.GOOGLE_TOKEN_PATH, SCOPES)
         except Exception as e:
             logger.warning("Не удалось загрузить токен из файла: %s", e)
 
+    # Fallback: env-переменная (начальная настройка)
+    if config.GOOGLE_TOKEN_JSON:
+        try:
+            return Credentials.from_authorized_user_info(
+                json.loads(config.GOOGLE_TOKEN_JSON), SCOPES
+            )
+        except Exception as e:
+            logger.warning("Не удалось загрузить токен из GOOGLE_TOKEN_JSON: %s", e)
+
     return None
 
 
-def _save_token(creds: Credentials) -> None:
+def _save_token(creds: "Credentials") -> None:
     """
-    Сохраняет токен в файл GOOGLE_TOKEN_PATH.
-    (Если используется только env, перезапишите GOOGLE_TOKEN_JSON вручную после первого запуска.)
+    Сохраняет токен:
+    1. В файл GOOGLE_TOKEN_PATH
+    2. Обновляет GOOGLE_TOKEN_JSON в .env (если файл существует)
+    3. Обновляет config.GOOGLE_TOKEN_JSON в памяти
     """
+    token_json = creds.to_json()
+
+    # 1. Файл
     try:
         os.makedirs(os.path.dirname(config.GOOGLE_TOKEN_PATH), exist_ok=True)
         with open(config.GOOGLE_TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
-        logger.debug("Токен сохранён: %s", config.GOOGLE_TOKEN_PATH)
+            f.write(token_json)
+        logger.debug("Токен сохранён в файл: %s", config.GOOGLE_TOKEN_PATH)
     except Exception as e:
-        logger.error("Ошибка сохранения токена: %s", e)
+        logger.error("Ошибка сохранения токена в файл: %s", e)
+
+    # 2. .env файл — обновляем или добавляем GOOGLE_TOKEN_JSON
+    _update_env_file("GOOGLE_TOKEN_JSON", token_json)
+
+    # 3. Config в памяти — чтобы текущий процесс тоже видел новый токен
+    config.GOOGLE_TOKEN_JSON = token_json
 
 
-def _get_credentials() -> Credentials:
-    """
-    Возвращает действующий OAuth2 токен.
+def _update_env_file(key: str, value: str) -> None:
+    """Обновляет или добавляет переменную в .env файл."""
+    # Ищем .env рядом с корнем проекта (bot/.env или на уровень выше)
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "..", ".env"),  # bot/.env
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"),  # ../.env
+    ]
+    env_path = next((p for p in candidates if os.path.exists(os.path.realpath(p))), None)
 
-    Credentials (client secret) берутся из GOOGLE_CREDENTIALS_JSON —
-    переменной окружения, содержащей JSON из Google Cloud Console.
+    if not env_path:
+        logger.debug("Файл .env не найден, пропускаем обновление %s", key)
+        return
 
-    Первый запуск: если токена нет, запускается OAuth flow через CLI
-    (пользователь открывает ссылку и вводит код).
-    """
+    env_path = os.path.realpath(env_path)
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        # Экранируем значение — токен JSON на одну строку без переносов
+        safe_value = value.replace("\n", "").replace("\r", "")
+        new_line = f"{key}={safe_value}\n"
+
+        # Заменяем существующую строку или добавляем в конец
+        replaced = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                lines[i] = new_line
+                replaced = True
+                break
+
+        if not replaced:
+            lines.append(new_line)
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        logger.info("Обновлён %s в %s", key, env_path)
+    except Exception as e:
+        logger.error("Ошибка обновления .env файла: %s", e)
+
+
+def _get_credentials() -> "Credentials":
+    """Возвращает действующий OAuth2 токен. Использует in-memory кэш."""
+    global _credentials_cache
+
     if not config.GOOGLE_CREDENTIALS_JSON:
         raise RuntimeError(
             "GOOGLE_CREDENTIALS_JSON не задан. "
             "Вставьте содержимое credentials.json в переменную окружения."
         )
 
+    # Кэш валиден — используем сразу
+    if _credentials_cache and _credentials_cache.valid:
+        return _credentials_cache
+
+    # Кэш протух — пробуем refresh в памяти
+    if _credentials_cache and _credentials_cache.expired and _credentials_cache.refresh_token:
+        try:
+            _credentials_cache.refresh(Request())
+            _save_token(_credentials_cache)
+            return _credentials_cache
+        except RefreshError as e:
+            logger.error("Не удалось обновить кэшированный токен: %s", e)
+            _credentials_cache = None
+            raise TokenExpiredError() from e
+
+    # Кэша нет — грузим из хранилища
     creds = _load_token()
 
     if not creds or not creds.valid:
@@ -98,17 +165,9 @@ def _get_credentials() -> Credentials:
                 logger.error("Не удалось обновить токен: %s", e)
                 raise TokenExpiredError() from e
         else:
-            # Первый запуск — OAuth flow через консоль
-            client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
-            flow = InstalledAppFlow.from_client_config(client_config, SCOPES)
-            creds = flow.run_local_server(port=0)
-            _save_token(creds)
-            logger.info(
-                "OAuth авторизация выполнена. Токен сохранён в %s.\n"
-                "Для Docker: скопируйте содержимое этого файла в GOOGLE_TOKEN_JSON.",
-                config.GOOGLE_TOKEN_PATH,
-            )
+            raise TokenExpiredError()
 
+    _credentials_cache = creds
     return creds
 
 
@@ -135,14 +194,15 @@ def get_auth_url() -> str:
 def complete_auth(code: str) -> None:
     """
     Завершает OAuth flow, принимая код авторизации от пользователя.
-    Сохраняет новый токен.
+    Сохраняет новый токен в файл и обновляет in-memory кэш.
     """
-    global _pending_auth_flow
+    global _pending_auth_flow, _credentials_cache
     if _pending_auth_flow is None:
         raise RuntimeError("Нет активного flow. Сначала вызови get_auth_url().")
     _pending_auth_flow.fetch_token(code=code.strip())
     creds = _pending_auth_flow.credentials
     _save_token(creds)
+    _credentials_cache = creds          # ← сразу доступен без перезапуска
     _pending_auth_flow = None
     logger.info("OAuth повторная авторизация выполнена успешно.")
 

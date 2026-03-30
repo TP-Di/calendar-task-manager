@@ -9,6 +9,8 @@ load_dotenv()
 
 
 class Config:
+    VERSION: str = "1.0.0"
+
     # Telegram
     BOT_TOKEN: str = os.getenv("BOT_TOKEN", "")
     ALLOWED_IDS: list[int] = [

@@ -124,7 +124,7 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
 async def _start_health_server(port: int) -> web.AppRunner:
     """Запускает aiohttp health check сервер для DigitalOcean."""
     async def handle(_request: web.Request) -> web.Response:
-        return web.Response(text="OK")
+        return web.Response(text=f"v{config.VERSION}")
 
     app = web.Application()
     app.router.add_get("/", handle)
