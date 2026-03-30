@@ -12,6 +12,7 @@ import os
 from typing import Any
 
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -26,6 +27,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/tasks",
 ]
+
+
+class TokenExpiredError(Exception):
+    """Google OAuth токен истёк или был отозван. Требуется повторная авторизация."""
 
 
 def _load_token() -> Credentials | None:
@@ -86,8 +91,12 @@ def _get_credentials() -> Credentials:
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            _save_token(creds)
+            try:
+                creds.refresh(Request())
+                _save_token(creds)
+            except RefreshError as e:
+                logger.error("Не удалось обновить токен: %s", e)
+                raise TokenExpiredError() from e
         else:
             # Первый запуск — OAuth flow через консоль
             client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
@@ -101,6 +110,41 @@ def _get_credentials() -> Credentials:
             )
 
     return creds
+
+
+# ---------- Повторная авторизация через Telegram ----------
+
+_pending_auth_flow: InstalledAppFlow | None = None
+
+
+def get_auth_url() -> str:
+    """
+    Генерирует OAuth URL для повторной авторизации.
+    Сохраняет flow в _pending_auth_flow для последующего обмена кода на токен.
+    """
+    global _pending_auth_flow
+    client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
+    flow = InstalledAppFlow.from_client_config(
+        client_config, SCOPES, redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+    )
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    _pending_auth_flow = flow
+    return auth_url
+
+
+def complete_auth(code: str) -> None:
+    """
+    Завершает OAuth flow, принимая код авторизации от пользователя.
+    Сохраняет новый токен.
+    """
+    global _pending_auth_flow
+    if _pending_auth_flow is None:
+        raise RuntimeError("Нет активного flow. Сначала вызови get_auth_url().")
+    _pending_auth_flow.fetch_token(code=code.strip())
+    creds = _pending_auth_flow.credentials
+    _save_token(creds)
+    _pending_auth_flow = None
+    logger.info("OAuth повторная авторизация выполнена успешно.")
 
 
 def _build_service():

@@ -13,11 +13,37 @@ from aiogram.types import BufferedInputFile, KeyboardButton, Message, ReplyKeybo
 
 from app.config import config
 from app.db.database import clear_history
+from app.services.calendar import TokenExpiredError
 import app.services.calendar as cal
 import app.services.tasks as tasks_svc
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+async def _handle_error(message: Message, e: Exception) -> None:
+    """Обрабатывает ошибку: если это истёкший токен — шлёт ссылку реавторизации, иначе — текст ошибки."""
+    if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+        await send_token_expired(message)
+    else:
+        await message.answer(f"❌ Ошибка: {e}")
+
+
+async def send_token_expired(message: Message) -> None:
+    """Отправляет сообщение с ссылкой для повторной авторизации Google."""
+    try:
+        auth_url = cal.get_auth_url()
+        text = (
+            "🔑 *Google токен истёк или был отозван*\n\n"
+            "Для повторной авторизации:\n"
+            f"1\\. Перейди по ссылке: [Авторизоваться в Google]({auth_url})\n"
+            "2\\. Разреши доступ и скопируй код\n"
+            "3\\. Отправь боту: `/auth_code КОД`"
+        )
+        await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
+    except Exception as e:
+        logger.error("Ошибка генерации auth URL: %s", e)
+        await message.answer("❌ Google токен истёк. Переменная GOOGLE_CREDENTIALS_JSON не задана или недействительна.")
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -260,7 +286,7 @@ async def btn_today(message: Message) -> None:
     try:
         events = await cal.get_events(now.isoformat(), day_end.isoformat())
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await _handle_error(message, e)
         return
     if not events:
         await message.answer("На сегодня событий нет ✅")
@@ -285,7 +311,7 @@ async def btn_tasks(message: Message) -> None:
     try:
         tasks = await tasks_svc.get_tasks()
     except Exception as e:
-        await message.answer(f"❌ Ошибка: {e}")
+        await _handle_error(message, e)
         return
     if not tasks:
         await message.answer("Активных задач нет ✅")
@@ -560,6 +586,28 @@ async def cmd_settings(message: Message) -> None:
         "_Для изменения — отредактируй переменные окружения и перезапусти бота._"
     )
     await message.answer(text, parse_mode="Markdown")
+
+
+@router.message(Command("reauth"))
+async def cmd_reauth(message: Message) -> None:
+    """Генерирует ссылку для повторной авторизации Google."""
+    await send_token_expired(message)
+
+
+@router.message(Command("auth_code"))
+async def cmd_auth_code(message: Message) -> None:
+    """Принимает код авторизации Google и сохраняет токен."""
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("Использование: `/auth_code КОД`", parse_mode="Markdown")
+        return
+    code = parts[1].strip()
+    try:
+        cal.complete_auth(code)
+        await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
+    except Exception as e:
+        logger.error("Ошибка при обмене кода авторизации: %s", e)
+        await message.answer(f"❌ Ошибка авторизации: `{e}`\nПроверь код и попробуй снова через /reauth", parse_mode="Markdown")
 
 
 @router.message(Command("heatmap"))
