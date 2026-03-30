@@ -21,6 +21,8 @@ from aiogram.types import (
 )
 
 from app.services.agent import execute_pending_tool, run_agent
+from app.services.calendar import TokenExpiredError
+from app.handlers.commands import send_token_expired
 import app.services.calendar as cal_svc
 import app.services.tasks as tasks_svc
 from app.services import reschedule as reschedule_svc
@@ -600,7 +602,10 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
             await callback.message.answer(result, parse_mode=None)
     except Exception as e:
         logger.error("Ошибка выполнения подтверждённого действия: %s", e)
-        await callback.message.answer(f"❌ Ошибка при выполнении: {e}")
+        if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+            await send_token_expired(callback.message)
+        else:
+            await callback.message.answer(f"❌ Ошибка при выполнении: {e}")
 
 
 # ─── Snooze callback ───────────────────────────────────────────────────────────
@@ -669,9 +674,12 @@ async def handle_text_message(message: Message) -> None:
     except Exception as e:
         logger.error("Ошибка агента для user_id=%s: %s", user_id, e)
         await thinking_msg.delete()
-        await message.answer(
-            f"❌ Произошла ошибка при обработке запроса: {e}\n\nПопробуй ещё раз или /clear для сброса истории."
-        )
+        if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+            await send_token_expired(message)
+        else:
+            await message.answer(
+                f"❌ Произошла ошибка при обработке запроса: {e}\n\nПопробуй ещё раз или /clear для сброса истории."
+            )
         return
 
     try:

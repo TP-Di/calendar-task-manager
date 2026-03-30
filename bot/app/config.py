@@ -17,9 +17,16 @@ class Config:
         if x.strip().isdigit()
     ]
 
+    # LLM провайдер: "groq" или "google"
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")
+
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "meta-llama/llama-4-maverick-17b-128e-instruct")
+
+    # Google AI Studio
+    GOOGLE_AI_KEY: str   = os.getenv("GOOGLE_AI_KEY", "")
+    GOOGLE_AI_MODEL: str = os.getenv("GOOGLE_AI_MODEL", "gemini-2.0-flash")
 
     # Google — содержимое credentials.json и token.json передаётся строкой JSON
     # GOOGLE_CREDENTIALS_JSON — обязательна (вставить содержимое credentials.json)
