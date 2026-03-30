@@ -62,14 +62,70 @@ def _load_token() -> "Credentials | None":
 
 
 def _save_token(creds: "Credentials") -> None:
-    """Сохраняет токен в файл GOOGLE_TOKEN_PATH."""
+    """
+    Сохраняет токен:
+    1. В файл GOOGLE_TOKEN_PATH
+    2. Обновляет GOOGLE_TOKEN_JSON в .env (если файл существует)
+    3. Обновляет config.GOOGLE_TOKEN_JSON в памяти
+    """
+    token_json = creds.to_json()
+
+    # 1. Файл
     try:
         os.makedirs(os.path.dirname(config.GOOGLE_TOKEN_PATH), exist_ok=True)
         with open(config.GOOGLE_TOKEN_PATH, "w") as f:
-            f.write(creds.to_json())
-        logger.debug("Токен сохранён: %s", config.GOOGLE_TOKEN_PATH)
+            f.write(token_json)
+        logger.debug("Токен сохранён в файл: %s", config.GOOGLE_TOKEN_PATH)
     except Exception as e:
-        logger.error("Ошибка сохранения токена: %s", e)
+        logger.error("Ошибка сохранения токена в файл: %s", e)
+
+    # 2. .env файл — обновляем или добавляем GOOGLE_TOKEN_JSON
+    _update_env_file("GOOGLE_TOKEN_JSON", token_json)
+
+    # 3. Config в памяти — чтобы текущий процесс тоже видел новый токен
+    config.GOOGLE_TOKEN_JSON = token_json
+
+
+def _update_env_file(key: str, value: str) -> None:
+    """Обновляет или добавляет переменную в .env файл."""
+    # Ищем .env рядом с корнем проекта (bot/.env или на уровень выше)
+    candidates = [
+        os.path.join(os.path.dirname(__file__), "..", "..", ".env"),  # bot/.env
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", ".env"),  # ../.env
+    ]
+    env_path = next((p for p in candidates if os.path.exists(os.path.realpath(p))), None)
+
+    if not env_path:
+        logger.debug("Файл .env не найден, пропускаем обновление %s", key)
+        return
+
+    env_path = os.path.realpath(env_path)
+
+    try:
+        with open(env_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        # Экранируем значение — токен JSON на одну строку без переносов
+        safe_value = value.replace("\n", "").replace("\r", "")
+        new_line = f"{key}={safe_value}\n"
+
+        # Заменяем существующую строку или добавляем в конец
+        replaced = False
+        for i, line in enumerate(lines):
+            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                lines[i] = new_line
+                replaced = True
+                break
+
+        if not replaced:
+            lines.append(new_line)
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        logger.info("Обновлён %s в %s", key, env_path)
+    except Exception as e:
+        logger.error("Ошибка обновления .env файла: %s", e)
 
 
 def _get_credentials() -> "Credentials":
