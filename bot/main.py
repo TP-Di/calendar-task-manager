@@ -14,7 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import config
 from app.db.database import backup_db, init_db
-from app.handlers import commands, documents, messages
+from app.handlers import commands, documents, messages, settings as settings_handler
 from app.middleware.whitelist import WhitelistMiddleware
 from app.services.briefing import send_briefing, send_weekly_retro
 from app.services.reminders import check_and_send_reminders, sync_completed_tasks
@@ -163,6 +163,7 @@ async def main() -> None:
     # Регистрируем роутеры (порядок важен)
     dp.include_router(commands.router)
     dp.include_router(documents.router)
+    dp.include_router(settings_handler.router)  # До messages — перехватывает текст при ожидании ввода
     dp.include_router(messages.router)  # Должен быть последним (ловит все сообщения)
 
     # Настраиваем команды бота
