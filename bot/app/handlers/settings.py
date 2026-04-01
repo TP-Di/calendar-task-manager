@@ -6,7 +6,6 @@ import logging
 import zoneinfo
 
 from aiogram import F, Router
-from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -336,11 +335,6 @@ async def send_settings_menu(target: "Message | CallbackQuery") -> None:
 # /settings command (local shortcut — also called from commands.py)
 # ──────────────────────────────────────────────────────────────────────────────
 
-@router.message(Command("settings"))
-async def cmd_settings(message: Message) -> None:
-    await send_settings_menu(message)
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Callback: navigation (home + submenus)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -569,7 +563,7 @@ async def cb_log_set(callback: CallbackQuery) -> None:
 # Text handler: catches API key / model / timezone input when session is active
 # ──────────────────────────────────────────────────────────────────────────────
 
-@router.message()
+@router.message(lambda msg: msg.from_user is not None and msg.from_user.id in _settings_sessions)
 async def handle_settings_text(message: Message) -> None:
     uid = message.from_user.id
     field = _settings_sessions.pop(uid, None)
