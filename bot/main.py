@@ -14,6 +14,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import config
 from app.db.database import backup_db, init_db
+from app.db.log_handler import SqliteLogHandler
 from app.handlers import commands, documents, messages, settings as settings_handler
 from app.middleware.whitelist import WhitelistMiddleware
 from app.services.briefing import send_briefing, send_weekly_retro
@@ -25,6 +26,10 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Дополнительно пишем логи в SQLite (доступ через SSH: sqlite3 data/bot.db)
+_db_log_handler = SqliteLogHandler(config.DB_PATH)
+_db_log_handler.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
+logging.getLogger().addHandler(_db_log_handler)
 logger = logging.getLogger(__name__)
 
 
