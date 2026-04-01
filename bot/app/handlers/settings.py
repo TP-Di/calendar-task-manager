@@ -2,6 +2,7 @@
 Интерактивное меню настроек бота через inline-кнопки (/settings).
 """
 
+import json
 import logging
 import zoneinfo
 
@@ -151,6 +152,9 @@ def _keys_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="Обновить Groq ключ",      callback_data="settings:key:GROQ_API_KEY"),
             InlineKeyboardButton(text="Обновить Google AI ключ", callback_data="settings:key:GOOGLE_AI_KEY"),
         ],
+        [
+            InlineKeyboardButton(text="📋 Обновить Google Calendar creds", callback_data="settings:key:GOOGLE_CREDENTIALS_JSON"),
+        ],
         [InlineKeyboardButton(text="← Назад", callback_data="settings:home")],
     ])
 
@@ -273,12 +277,14 @@ def _ai_text() -> str:
 
 
 def _keys_text() -> str:
-    groq_masked = _mask_key(config.GROQ_API_KEY)
+    groq_masked   = _mask_key(config.GROQ_API_KEY)
     google_masked = _mask_key(config.GOOGLE_AI_KEY)
+    gcal_status   = "задан ✅" if config.GOOGLE_CREDENTIALS_JSON else "(не задан) ⚠️"
     return (
         "🔑 *API ключи*\n\n"
         f"*Groq API key:* `{groq_masked}`\n"
-        f"*Google AI key:* `{google_masked}`"
+        f"*Google AI key:* `{google_masked}`\n"
+        f"*Google Calendar creds:* `{gcal_status}`"
     )
 
 
@@ -443,14 +449,19 @@ async def cb_model(callback: CallbackQuery) -> None:
 async def cb_key(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     field = callback.data[len("settings:key:"):]
-    if field not in ("GROQ_API_KEY", "GOOGLE_AI_KEY"):
+    _FIELD_LABELS = {
+        "GROQ_API_KEY":            "Groq API ключ",
+        "GOOGLE_AI_KEY":           "Google AI ключ",
+        "GOOGLE_CREDENTIALS_JSON": "Google Calendar credentials\n_(содержимое credentials\\.json одной строкой)_",
+    }
+    if field not in _FIELD_LABELS:
         await callback.answer("Неизвестное поле")
         return
     _settings_sessions[uid] = field
-    label = "Groq API ключ" if field == "GROQ_API_KEY" else "Google AI ключ"
+    label = _FIELD_LABELS[field]
     await callback.message.edit_text(
-        f"✏️ Отправь новый *{label}* следующим сообщением:",
-        parse_mode="Markdown",
+        f"✏️ Отправь *{label}* следующим сообщением:",
+        parse_mode="MarkdownV2",
     )
     await callback.answer()
 
@@ -594,6 +605,27 @@ async def handle_settings_text(message: Message) -> None:
         _apply(field, value)
         label = "Groq API ключ" if field == "GROQ_API_KEY" else "Google AI ключ"
         await message.answer(f"✅ {label} сохранён", parse_mode="Markdown")
+        await message.answer(_keys_text(), reply_markup=_keys_kb(), parse_mode="Markdown")
+
+    elif field == "GOOGLE_CREDENTIALS_JSON":
+        try:
+            parsed = json.loads(value)
+            inner = parsed.get("installed") or parsed.get("web")
+            if not inner or not inner.get("client_id") or not inner.get("client_secret"):
+                raise ValueError("не найдены client_id или client_secret")
+        except Exception as exc:
+            await message.answer(
+                f"❌ Неверный формат: `{exc}`\n\n"
+                "Вставь содержимое файла `credentials.json` целиком одной строкой.",
+                parse_mode="Markdown",
+            )
+            return
+        _apply("GOOGLE_CREDENTIALS_JSON", value)
+        await message.answer(
+            "✅ Google Calendar credentials сохранены.\n\n"
+            "Выполни `/reauth` чтобы авторизоваться в Google Calendar.",
+            parse_mode="Markdown",
+        )
         await message.answer(_keys_text(), reply_markup=_keys_kb(), parse_mode="Markdown")
 
     else:
