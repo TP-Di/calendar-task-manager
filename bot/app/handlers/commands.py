@@ -560,32 +560,9 @@ async def cmd_clear(message: Message) -> None:
 
 @router.message(Command("settings"))
 async def cmd_settings(message: Message) -> None:
-    """Показывает текущие настройки бота."""
-    from app.services.agent import _PROVIDERS
-
-    provider = config.LLM_PROVIDER.lower()
-    pcfg     = _PROVIDERS.get(provider, _PROVIDERS["groq"])
-    model    = pcfg["model"]()
-
-    briefing_h, briefing_m = config.BRIEFING_TIME.split(":")
-    sleep_end   = config.SLEEP_HOUR_END
-    work_start  = config.WORK_HOUR_START
-    work_end    = config.WORK_HOUR_END
-    sleep_start = config.SLEEP_HOUR_START
-
-    text = (
-        "⚙️ *Настройки бота*\n\n"
-        f"*LLM провайдер:* `{provider}`\n"
-        f"*Модель:* `{model}`\n\n"
-        f"*Временная зона:* `{config.TIMEZONE}`\n"
-        f"*Утренний брифинг:* `{config.BRIEFING_TIME}`\n"
-        f"*Интервал напоминаний:* каждые `{config.REMINDER_INTERVAL_HOURS}` ч\n\n"
-        f"*Рабочее время:* `{work_start}:00 – {work_end}:00`\n"
-        f"*Нерабочее время:* `{sleep_end}:00 – {work_start}:00` и `{work_end}:00 – {sleep_start}:00`\n"
-        f"*Сон:* `{sleep_start}:00 – {sleep_end}:00`\n\n"
-        "_Для изменения — отредактируй переменные окружения и перезапусти бота._"
-    )
-    await message.answer(text, parse_mode="Markdown")
+    """Открывает интерактивное меню настроек."""
+    from app.handlers.settings import send_settings_menu
+    await send_settings_menu(message)
 
 
 @router.message(Command("reauth"))
