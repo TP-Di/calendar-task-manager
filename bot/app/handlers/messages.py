@@ -696,14 +696,19 @@ _MONTHS_RU = [
     "янв", "фев", "мар", "апр", "мая", "июн",
     "июл", "авг", "сен", "окт", "ноя", "дек",
 ]
+_WEEKDAYS_RU = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
 def _fmt_iso(iso: str) -> str:
     try:
-        date, time = iso[:10], iso[11:16]
-        _, month, day = date.split("-")
-        m = _MONTHS_RU[int(month) - 1]
-        return f"{int(day)} {m} {time}" if time and time != "00:00" else f"{int(day)} {m}"
+        from datetime import date as _date
+        date_str, time = iso[:10], iso[11:16]
+        year, month, day = date_str.split("-")
+        m   = _MONTHS_RU[int(month) - 1]
+        wd  = _WEEKDAYS_RU[_date(int(year), int(month), int(day)).weekday()]
+        if time and time != "00:00":
+            return f"{int(day)} {m} ({wd}) {time}"
+        return f"{int(day)} {m} ({wd})"
     except Exception:
         return iso[:16].replace("T", " ")
 
