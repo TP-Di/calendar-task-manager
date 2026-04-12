@@ -14,6 +14,7 @@ from app.db.database import add_message, get_history
 from app.tools.definitions import TOOLS
 import app.services.calendar as cal
 import app.services.tasks as tasks_svc
+from app.services.calendar import TokenExpiredError
 
 logger = logging.getLogger(__name__)
 
@@ -492,9 +493,12 @@ async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
 
     try:
         result = await _TOOL_DISPATCH[tool_name](tool_args)
+    except TokenExpiredError:
+        raise  # пробрасываем наверх → handle_confirmation → send_token_expired
     except Exception as e:
-        logger.error("Ошибка выполнения tool %s: %s", tool_name, e)
-        return f"❌ Ошибка при выполнении: {e}"
+        logger.error("Ошибка выполнения tool %s: %s", tool_name, e, exc_info=True)
+        err_msg = str(e) or type(e).__name__
+        return f"❌ Ошибка при выполнении: {err_msg}"
 
     return _format_tool_success(tool_name, result)
 
