@@ -387,27 +387,25 @@ async def bulk_create_events(events: list[dict]) -> list[dict]:
 
 
 async def update_event(event_id: str, fields: dict) -> dict:
-    """Обновляет поля существующего события."""
+    """Обновляет поля существующего события через PATCH (только изменённые поля)."""
     import asyncio
 
-    def _update():
+    def _patch():
         try:
             service = _build_service()
-            # Сначала получаем текущее событие
-            event = service.events().get(calendarId="primary", eventId=event_id).execute()
-
+            patch_body: dict = {}
             if "title" in fields:
-                event["summary"] = fields["title"]
+                patch_body["summary"] = fields["title"]
             if "description" in fields:
-                event["description"] = fields["description"]
+                patch_body["description"] = fields["description"]
             if "start" in fields:
-                event["start"] = {"dateTime": fields["start"], "timeZone": config.TIMEZONE}
+                patch_body["start"] = {"dateTime": fields["start"], "timeZone": config.TIMEZONE}
             if "end" in fields:
-                event["end"] = {"dateTime": fields["end"], "timeZone": config.TIMEZONE}
+                patch_body["end"] = {"dateTime": fields["end"], "timeZone": config.TIMEZONE}
 
             updated = (
                 service.events()
-                .update(calendarId="primary", eventId=event_id, body=event)
+                .patch(calendarId="primary", eventId=event_id, body=patch_body)
                 .execute()
             )
             logger.info("Обновлено событие: %s", event_id)
@@ -416,7 +414,7 @@ async def update_event(event_id: str, fields: dict) -> dict:
             logger.error("Ошибка Calendar API (update_event): %s", e)
             raise
 
-    return await asyncio.to_thread(_update)
+    return await asyncio.to_thread(_patch)
 
 
 async def delete_event(event_id: str) -> dict:
