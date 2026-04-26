@@ -33,6 +33,9 @@ router = Router()
 # Хранилище ожидающих подтверждения tool calls: user_id -> pending_data
 _pending_confirmations: dict[int, dict] = {}
 
+# message_id диалога подтверждения: user_id -> (chat_id, message_id)
+_pending_confirm_msgs: dict[int, tuple[int, int]] = {}
+
 # Хранилище grid-сессий выбора слота: user_id -> session
 _grid_sessions: dict[int, dict] = {}
 
@@ -315,16 +318,17 @@ async def handle_agent_response(message: Message, response: str, user_id: int) -
             description += "\n".join(lines)
 
     try:
-        await message.answer(
+        sent_msg = await message.answer(
             f"🔔 *Подтверждение действия:*\n\n{description}\n\nВыполнить?",
             parse_mode="Markdown",
             reply_markup=_make_confirm_keyboard(),
         )
     except Exception:
-        await message.answer(
+        sent_msg = await message.answer(
             f"🔔 Подтверждение действия:\n\n{description}\n\nВыполнить?",
             reply_markup=_make_confirm_keyboard(),
         )
+    _pending_confirm_msgs[user_id] = (sent_msg.chat.id, sent_msg.message_id)
 
 
 # ─── Grid callbacks ────────────────────────────────────────────────────────────
@@ -579,6 +583,7 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
         return
 
     pending = _pending_confirmations.pop(user_id, None)
+    _pending_confirm_msgs.pop(user_id, None)
     if not pending:
         await callback.message.edit_text(
             "❌ Сессия подтверждения истекла. Повторите запрос.",
@@ -661,6 +666,17 @@ async def handle_text_message(message: Message) -> None:
 
     _pending_confirmations.pop(user_id, None)
     _grid_sessions.pop(user_id, None)
+
+    if user_id in _pending_confirm_msgs:
+        chat_id, msg_id = _pending_confirm_msgs.pop(user_id)
+        try:
+            await message.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=msg_id,
+                text="🔔 Отменено — поступил новый запрос.",
+            )
+        except Exception:
+            pass
 
     thinking_msg = await message.answer("🤔 Думаю...")
 

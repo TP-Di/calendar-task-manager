@@ -93,7 +93,7 @@ URL из сообщения → автоматически в поле descripti
 ## Даты: переводи в ISO до вызова tool. Используй week_preview как шпаргалку.
 сегодня=+0 · завтра=+1 · послезавтра=+2 · "в X" = ближайший X от сегодня (включая сегодня) · "след неделя" = след пн–вс · "через N дней" = +N
 
-## Дедлайн: не упомянут → due = сегодня 23:59:59. "Без дедлайна" → не передавай due. due ≠ время работы (для блока используй start_time/end_time).
+## Дедлайн: не упомянут → due = {today_iso}T23:59:59. "Без дедлайна" → не передавай due. due ≠ время работы (для блока используй start_time/end_time).
 
 Ответ: кратко. Просроченные задачи: ⚠️ Для изменений — только tool, никакого текстового описания."""
 
@@ -126,6 +126,7 @@ def _get_system_prompt() -> str:
         current_time=current_time_str,
         timezone=config.TIMEZONE,
         week_preview=week_preview,
+        today_iso=now.strftime("%Y-%m-%d"),
         work_start=config.WORK_HOUR_START,
         work_end=config.WORK_HOUR_END,
         sleep_start=config.SLEEP_HOUR_START,
