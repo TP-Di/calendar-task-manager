@@ -2,11 +2,9 @@
 База данных: инициализация, история диалога, контекст пользователя, бэкап
 """
 
-import asyncio
 import json
 import logging
 import os
-import shutil
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -141,11 +139,29 @@ async def update_user_context(user_id: int, data: dict) -> None:
 
 
 async def backup_db() -> None:
-    """Создаёт бэкап SQLite в data/backups/ с датой в имени файла."""
+    """
+    Создаёт бэкап SQLite через Backup API (WAL-safe).
+    Ротация: оставляем последние 30 файлов.
+    """
     backup_dir = os.path.join(os.path.dirname(config.DB_PATH), "backups")
     os.makedirs(backup_dir, exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
     backup_path = os.path.join(backup_dir, f"bot_{date_str}.db")
-    # Используем aiosqlite для безопасного бэкапа через отдельный поток
-    await asyncio.to_thread(shutil.copy2, config.DB_PATH, backup_path)
+
+    # SQLite Backup API через aiosqlite — корректно работает с WAL
+    async with aiosqlite.connect(config.DB_PATH) as src, \
+               aiosqlite.connect(backup_path) as dst:
+        await src.backup(dst)
     logger.info("Бэкап базы данных: %s", backup_path)
+
+    # Ротация: keep last 30
+    try:
+        files = sorted(
+            f for f in os.listdir(backup_dir)
+            if f.startswith("bot_") and f.endswith(".db")
+        )
+        for old in files[:-30]:
+            os.remove(os.path.join(backup_dir, old))
+            logger.debug("Удалён старый бэкап: %s", old)
+    except Exception as e:
+        logger.warning("Не удалось ротировать бэкапы: %s", e)

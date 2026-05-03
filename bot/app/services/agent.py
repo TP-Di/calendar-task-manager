@@ -529,18 +529,29 @@ async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
 async def execute_pending_tool(pending_data: dict) -> str:
     """
     Выполняет отложенный tool call (или батч tool calls) после подтверждения.
+    Валидирует структуру PENDING_TOOL JSON — возвращает понятную ошибку при malformed.
     Поддерживает два формата pending_data:
       - новый: {"tools": [{tool_name, tool_args, tool_call_id}, ...], "user_id": ...}
       - старый: {"tool_name": ..., "tool_args": ..., "user_id": ...}  (обратная совместимость)
     """
-    user_id = pending_data["user_id"]
+    if not isinstance(pending_data, dict):
+        return "❌ Внутренняя ошибка: некорректный формат подтверждения."
 
-    # Новый батч-формат
-    tools: list[dict] = pending_data.get("tools") or []
+    user_id = pending_data.get("user_id")
+    if not isinstance(user_id, int):
+        return "❌ Внутренняя ошибка: отсутствует user_id."
 
-    # Обратная совместимость: старый формат с единственным инструментом
+    tools_raw = pending_data.get("tools")
+    tools: list[dict] = []
+    if isinstance(tools_raw, list):
+        tools = [t for t in tools_raw if isinstance(t, dict)]
+
+    # Обратная совместимость
     if not tools and pending_data.get("tool_name"):
-        tools = [{"tool_name": pending_data["tool_name"], "tool_args": pending_data["tool_args"]}]
+        tools = [{
+            "tool_name": pending_data["tool_name"],
+            "tool_args": pending_data.get("tool_args") or {},
+        }]
 
     if not tools:
         error_text = "❌ Внутренняя ошибка: нет инструментов для выполнения."
@@ -549,7 +560,15 @@ async def execute_pending_tool(pending_data: dict) -> str:
 
     result_lines: list[str] = []
     for entry in tools:
-        line = await _execute_single_tool(entry["tool_name"], entry["tool_args"])
+        tool_name = entry.get("tool_name")
+        tool_args = entry.get("tool_args") or {}
+        if not isinstance(tool_name, str) or tool_name not in _TOOL_DISPATCH:
+            result_lines.append(f"❌ Неизвестный или отсутствующий tool: {tool_name!r}")
+            continue
+        if not isinstance(tool_args, dict):
+            result_lines.append(f"❌ Некорректные аргументы для {tool_name}.")
+            continue
+        line = await _execute_single_tool(tool_name, tool_args)
         result_lines.append(line)
 
     final_text = "\n".join(result_lines)

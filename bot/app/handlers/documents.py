@@ -5,8 +5,6 @@
 
 import io
 import logging
-import tempfile
-import os
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -14,6 +12,10 @@ from aiogram.types import Message
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+# Лимиты для PDF: защита от OOM и payload-bomb
+_MAX_PDF_BYTES = 5_000_000
+_MAX_PDF_PAGES = 50
 
 # Состояния ожидания документа (user_id -> True)
 _waiting_upload: set[int] = set()
@@ -45,6 +47,14 @@ async def handle_document(message: Message) -> None:
         return
 
     _waiting_upload.discard(user_id)
+
+    # Лимит размера до скачивания
+    if doc.file_size and doc.file_size > _MAX_PDF_BYTES:
+        size_mb = doc.file_size / 1_000_000
+        await message.answer(
+            f"❌ Файл слишком большой: {size_mb:.1f} MB (лимит {_MAX_PDF_BYTES // 1_000_000} MB)."
+        )
+        return
 
     await message.answer("⏳ Загружаю и анализирую документ...")
 
@@ -98,10 +108,16 @@ async def _extract_pdf_text(pdf_bytes: bytes) -> str:
 
             text_parts = []
             with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-                for page_num, page in enumerate(pdf.pages, 1):
+                pages = pdf.pages[:_MAX_PDF_PAGES]
+                truncated = len(pdf.pages) > _MAX_PDF_PAGES
+                for page_num, page in enumerate(pages, 1):
                     page_text = page.extract_text()
                     if page_text:
                         text_parts.append(f"--- Страница {page_num} ---\n{page_text}")
+                if truncated:
+                    text_parts.append(
+                        f"... [PDF обрезан до {_MAX_PDF_PAGES} страниц из {len(pdf.pages)}]"
+                    )
             return "\n\n".join(text_parts)
         except ImportError:
             logger.error("pdfplumber не установлен")

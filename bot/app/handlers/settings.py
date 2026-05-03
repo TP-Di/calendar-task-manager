@@ -2,8 +2,10 @@
 Интерактивное меню настроек бота через inline-кнопки (/settings).
 """
 
+import asyncio
 import json
 import logging
+import time
 import zoneinfo
 
 from aiogram import F, Router
@@ -20,8 +22,36 @@ from app.services.calendar import _update_env_file
 logger = logging.getLogger(__name__)
 router = Router()
 
-# user_id → имя поля, которое ждём вводом текста
-_settings_sessions: dict[int, str] = {}
+# user_id → (имя поля, started_at) — TTL 5 мин (H4)
+_SETTINGS_SESSION_TTL = 300.0  # seconds
+_settings_sessions: dict[int, tuple[str, float]] = {}
+
+
+def _set_session(uid: int, field: str) -> None:
+    _settings_sessions[uid] = (field, time.monotonic())
+
+
+def _pop_session(uid: int) -> str | None:
+    """Возвращает field если сессия не истекла, иначе None и удаляет запись."""
+    entry = _settings_sessions.pop(uid, None)
+    if not entry:
+        return None
+    field, started = entry
+    if time.monotonic() - started > _SETTINGS_SESSION_TTL:
+        return None
+    return field
+
+
+def _has_active_session(uid: int) -> bool:
+    entry = _settings_sessions.get(uid)
+    if not entry:
+        return False
+    if time.monotonic() - entry[1] > _SETTINGS_SESSION_TTL:
+        _pop_session(uid)
+        return False
+    return True
+
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Модели по провайдерам (порядок: index 0..3 → используется в callback)
@@ -95,10 +125,10 @@ def _check(cond: bool) -> str:
     return "✅ " if cond else ""
 
 
-def _apply(key: str, value) -> None:
-    """Обновляет config в памяти и записывает в .env."""
+async def _apply(key: str, value) -> None:
+    """Обновляет config в памяти и записывает в .env (файл — в потоке)."""
     setattr(config, key, value)
-    _update_env_file(key, str(value))
+    await asyncio.to_thread(_update_env_file, key, str(value))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -497,7 +527,7 @@ async def cb_viz_set(callback: CallbackQuery) -> None:
     except ValueError:
         await callback.answer("Ошибка значения")
         return
-    _apply(config_key, value)
+    await _apply(config_key, value)
     await callback.message.edit_text(_viz_text(), reply_markup=_viz_kb(), parse_mode="Markdown")
     await callback.answer(f"{label}: {value}")
 
@@ -505,7 +535,7 @@ async def cb_viz_set(callback: CallbackQuery) -> None:
 @router.callback_query(F.data == "settings:viz_routine_edit")
 async def cb_viz_routine(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
-    _settings_sessions[uid] = "ROUTINE_PATTERNS"
+    _set_session(uid, "ROUTINE_PATTERNS")
     current = config.ROUTINE_PATTERNS or "(пусто)"
     await callback.message.edit_text(
         "✏️ Отправь список рутинных паттернов через запятую (regex поддерживается).\n"
@@ -526,7 +556,7 @@ async def cb_provider(callback: CallbackQuery) -> None:
     if provider not in ("groq", "google"):
         await callback.answer("Неизвестный провайдер")
         return
-    _apply("LLM_PROVIDER", provider)
+    await _apply("LLM_PROVIDER", provider)
     await callback.message.edit_text(_ai_text(), reply_markup=_ai_kb(), parse_mode="Markdown")
     await callback.answer(f"Провайдер: {provider}")
 
@@ -540,7 +570,7 @@ async def cb_model(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     val = callback.data[len("settings:model:"):]
     if val == "custom":
-        _settings_sessions[uid] = "MODEL_CUSTOM"
+        _set_session(uid, "MODEL_CUSTOM")
         await callback.message.edit_text(
             "✏️ Отправь название модели следующим сообщением:",
             parse_mode="Markdown",
@@ -559,7 +589,7 @@ async def cb_model(callback: CallbackQuery) -> None:
         return
     model_name = models[idx]
     key = "GOOGLE_AI_MODEL" if provider == "google" else "GROQ_MODEL"
-    _apply(key, model_name)
+    await _apply(key, model_name)
     await callback.message.edit_text(_ai_text(), reply_markup=_ai_kb(), parse_mode="Markdown")
     short = model_name.split("/")[-1] if "/" in model_name else model_name
     await callback.answer(f"Модель: {short}")
@@ -581,7 +611,7 @@ async def cb_key(callback: CallbackQuery) -> None:
     if field not in _FIELD_LABELS:
         await callback.answer("Неизвестное поле")
         return
-    _settings_sessions[uid] = field
+    _set_session(uid, field)
     label = _FIELD_LABELS[field]
     await callback.message.edit_text(
         f"✏️ Отправь *{label}* следующим сообщением:",
@@ -616,7 +646,7 @@ async def cb_hour(callback: CallbackQuery) -> None:
         return
     current = getattr(config, config_key)
     new_val = (current + (1 if direction == "inc" else -1)) % 24
-    _apply(config_key, new_val)
+    await _apply(config_key, new_val)
     await callback.message.edit_text(_hours_text(), reply_markup=_hours_kb(), parse_mode="Markdown")
     await callback.answer(f"{config_key}: {new_val:02d}:00")
 
@@ -628,7 +658,7 @@ async def cb_hour(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("settings:briefing:"))
 async def cb_briefing(callback: CallbackQuery) -> None:
     val = callback.data[len("settings:briefing:"):]
-    _apply("BRIEFING_TIME", val)
+    await _apply("BRIEFING_TIME", val)
     from app.services.scheduler_ref import reschedule_briefing
     reschedule_briefing(val, config.TIMEZONE)
     await callback.message.edit_text(_schedule_text(), reply_markup=_schedule_kb(), parse_mode="Markdown")
@@ -647,7 +677,7 @@ async def cb_reminder(callback: CallbackQuery) -> None:
     except ValueError:
         await callback.answer("Ошибка")
         return
-    _apply("REMINDER_INTERVAL_HOURS", hours)
+    await _apply("REMINDER_INTERVAL_HOURS", hours)
     await callback.message.edit_text(_schedule_text(), reply_markup=_schedule_kb(), parse_mode="Markdown")
     await callback.answer(f"Напоминания: каждые {hours} ч")
 
@@ -661,7 +691,7 @@ async def cb_tz_set(callback: CallbackQuery) -> None:
     uid = callback.from_user.id
     val = callback.data[len("settings:tz:"):]
     if val == "custom":
-        _settings_sessions[uid] = "TIMEZONE"
+        _set_session(uid, "TIMEZONE")
         await callback.message.edit_text(
             "✏️ Отправь IANA-название временной зоны (например `Asia/Almaty`):",
             parse_mode="Markdown",
@@ -674,7 +704,7 @@ async def cb_tz_set(callback: CallbackQuery) -> None:
     except Exception:
         await callback.answer(f"Неверная зона: {val}")
         return
-    _apply("TIMEZONE", val)
+    await _apply("TIMEZONE", val)
     from app.services.scheduler_ref import reschedule_briefing
     reschedule_briefing(config.BRIEFING_TIME, val)
     await callback.message.edit_text(_tz_text(), reply_markup=_tz_kb(), parse_mode="Markdown")
@@ -691,7 +721,7 @@ async def cb_log_set(callback: CallbackQuery) -> None:
     if level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
         await callback.answer("Неверный уровень")
         return
-    _apply("LOG_LEVEL", level)
+    await _apply("LOG_LEVEL", level)
     import logging as _logging
     _logging.getLogger().setLevel(level)
     await callback.message.edit_text(_log_text(), reply_markup=_log_kb(), parse_mode="Markdown")
@@ -702,10 +732,10 @@ async def cb_log_set(callback: CallbackQuery) -> None:
 # Text handler: catches API key / model / timezone input when session is active
 # ──────────────────────────────────────────────────────────────────────────────
 
-@router.message(lambda msg: msg.from_user is not None and msg.from_user.id in _settings_sessions)
+@router.message(lambda msg: msg.from_user is not None and _has_active_session(msg.from_user.id))
 async def handle_settings_text(message: Message) -> None:
     uid = message.from_user.id
-    field = _settings_sessions.pop(uid, None)
+    field = _pop_session(uid)
     if field is None:
         return  # Not waiting — pass to next router
 
@@ -717,7 +747,7 @@ async def handle_settings_text(message: Message) -> None:
         except Exception:
             await message.answer(f"❌ Неверная временная зона: `{value}`\nПример: `Asia/Almaty`", parse_mode="Markdown")
             return
-        _apply("TIMEZONE", value)
+        await _apply("TIMEZONE", value)
         from app.services.scheduler_ref import reschedule_briefing
         reschedule_briefing(config.BRIEFING_TIME, value)
         await message.answer(f"✅ Временная зона: `{value}`", parse_mode="Markdown")
@@ -726,13 +756,13 @@ async def handle_settings_text(message: Message) -> None:
     elif field == "MODEL_CUSTOM":
         provider = config.LLM_PROVIDER.lower()
         key = "GOOGLE_AI_MODEL" if provider == "google" else "GROQ_MODEL"
-        _apply(key, value)
+        await _apply(key, value)
         short = value.split("/")[-1] if "/" in value else value
         await message.answer(f"✅ Модель: `{short}`", parse_mode="Markdown")
         await message.answer(_ai_text(), reply_markup=_ai_kb(), parse_mode="Markdown")
 
     elif field in ("GROQ_API_KEY", "GOOGLE_AI_KEY"):
-        _apply(field, value)
+        await _apply(field, value)
         label = "Groq API ключ" if field == "GROQ_API_KEY" else "Google AI ключ"
         await message.answer(f"✅ {label} сохранён", parse_mode="Markdown")
         await message.answer(_keys_text(), reply_markup=_keys_kb(), parse_mode="Markdown")
@@ -752,7 +782,7 @@ async def handle_settings_text(message: Message) -> None:
                 parse_mode="Markdown",
             )
             return
-        _apply("ROUTINE_PATTERNS", value)
+        await _apply("ROUTINE_PATTERNS", value)
         await message.answer(f"✅ Рутинные паттерны: `{value or '(пусто)'}`", parse_mode="Markdown")
         await message.answer(_viz_text(), reply_markup=_viz_kb(), parse_mode="Markdown")
 
@@ -769,7 +799,7 @@ async def handle_settings_text(message: Message) -> None:
                 parse_mode="Markdown",
             )
             return
-        _apply("GOOGLE_CREDENTIALS_JSON", value)
+        await _apply("GOOGLE_CREDENTIALS_JSON", value)
         await message.answer(
             "✅ Google Calendar credentials сохранены.\n\n"
             "Выполни `/reauth` чтобы авторизоваться в Google Calendar.",

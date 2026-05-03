@@ -46,6 +46,11 @@ _google_api_executor = concurrent.futures.ThreadPoolExecutor(
 _credentials_cache: "Credentials | None" = None
 _credentials_lock = threading.Lock()
 
+# Lock для записи в data/runtime.env — есть параллельные writer'ы:
+#   - _save_token (executor-тред после refresh)
+#   - settings._apply (event-loop, через asyncio.to_thread)
+_env_lock = threading.Lock()
+
 
 async def _google_run(fn, max_attempts: int = 3, base_delay: float = 1.0):
     """
@@ -118,34 +123,38 @@ def _save_token(creds: "Credentials") -> None:
 def _update_env_file(key: str, value: str) -> None:
     """
     Сохраняет ключ в data/runtime.env (персистентный том Docker).
-    Значения сохраняются в кавычках со стандартным экранированием .env.
+    Атомарно: пишем во временный файл, потом os.replace.
+    Thread-safe: серилизуем через _env_lock.
     """
     runtime_env = os.path.join("data", "runtime.env")
     try:
         os.makedirs("data", exist_ok=True)
 
-        lines: list[str] = []
-        if os.path.exists(runtime_env):
-            with open(runtime_env, "r", encoding="utf-8") as f:
-                lines = f.readlines()
+        with _env_lock:
+            lines: list[str] = []
+            if os.path.exists(runtime_env):
+                with open(runtime_env, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
 
-        # Sanitize: strip newlines, escape backslashes then double-quotes
-        safe = value.replace("\n", "").replace("\r", "")
-        safe = safe.replace("\\", "\\\\").replace('"', '\\"')
-        new_line = f'{key}="{safe}"\n'
+            # Sanitize: strip newlines, escape backslashes then double-quotes
+            safe = value.replace("\n", "").replace("\r", "")
+            safe = safe.replace("\\", "\\\\").replace('"', '\\"')
+            new_line = f'{key}="{safe}"\n'
 
-        replaced = False
-        for i, line in enumerate(lines):
-            if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                lines[i] = new_line
-                replaced = True
-                break
+            replaced = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                    lines[i] = new_line
+                    replaced = True
+                    break
 
-        if not replaced:
-            lines.append(new_line)
+            if not replaced:
+                lines.append(new_line)
 
-        with open(runtime_env, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+            tmp_path = runtime_env + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.writelines(lines)
+            os.replace(tmp_path, runtime_env)
 
         logger.info("Обновлён %s в %s", key, runtime_env)
     except Exception as e:

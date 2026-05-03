@@ -2,6 +2,7 @@
 Обработчики команд: /start /help /status /load /done /postpone /clear /heatmap
 """
 
+import asyncio
 import io
 import logging
 from datetime import datetime, timedelta, timezone
@@ -894,7 +895,8 @@ async def cmd_auth_code(message: Message) -> None:
     code = parts[1].strip()
     user_id = message.from_user.id
     try:
-        cal.complete_auth(code, user_id)
+        # complete_auth делает HTTP-запрос к Google + файловые операции — выносим в поток
+        await asyncio.to_thread(cal.complete_auth, code, user_id)
         await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
     except Exception as e:
         logger.error("Ошибка при обмене кода авторизации: %s", e)
