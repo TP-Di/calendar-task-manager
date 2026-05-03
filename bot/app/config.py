@@ -83,12 +83,6 @@ class Config:
     GOOGLE_TOKEN_JSON: str = os.getenv("GOOGLE_TOKEN_JSON", "")
     # Файловый fallback для токена (используется если GOOGLE_TOKEN_JSON не задан)
     GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "data/token.json")
-    # OAuth redirect URL: если указан публичный URL бота — используется
-    # /oauth/callback flow (бот сам обработает редирект, юзеру не надо
-    # копировать ссылку из адресной строки). Если пусто — fallback на
-    # localhost-redirect с ручной отправкой /auth_code <ссылка>.
-    # Пример: https://my-bot.ondigitalocean.app
-    OAUTH_PUBLIC_URL: str = os.getenv("OAUTH_PUBLIC_URL", "")
 
     # Расписание
     BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "08:00")  # HH:MM локального времени (TIMEZONE)

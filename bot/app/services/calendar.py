@@ -255,18 +255,6 @@ _AUTH_FLOW_TTL = 900.0  # 15 мин
 _pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, str, float]] = {}
 
 
-def is_callback_flow_enabled() -> bool:
-    """True если настроен OAUTH_PUBLIC_URL — используем web-callback flow."""
-    return bool((config.OAUTH_PUBLIC_URL or "").strip())
-
-
-def _redirect_uri() -> str:
-    """Возвращает redirect_uri для OAuth flow."""
-    if is_callback_flow_enabled():
-        return f"{config.OAUTH_PUBLIC_URL.rstrip('/')}/oauth/callback"
-    return "http://localhost"
-
-
 def get_auth_url(user_id: int) -> str:
     """
     Генерирует OAuth URL для повторной авторизации конкретного пользователя.
@@ -275,15 +263,13 @@ def get_auth_url(user_id: int) -> str:
     (тот же state) — иначе пользователь, нажавший /reauth дважды, мог получить
     state mismatch на /auth_code от первой ссылки.
 
-    Если задан OAUTH_PUBLIC_URL — redirect_uri ведёт на /oauth/callback бота
-    и пользователь не должен ничего копировать вручную. Иначе fallback на
-    http://localhost (Google прекратил поддержку OOB-flow в октябре 2022).
+    Использует http://localhost как redirect_uri — Google прекратил поддержку
+    OOB-flow (urn:ietf:wg:oauth:2.0:oob) в октябре 2022. После consent браузер
+    перенаправит на localhost (страница не откроется, но URL содержит ?code=...).
     """
     import time as _time
-    import secrets
     now = _time.monotonic()
 
-    # Если есть активный (не просроченный) flow — возвращаем его URL
     entry = _pending_auth_flows.get(user_id)
     if entry is not None:
         _flow, url, _state, started = entry
@@ -293,34 +279,11 @@ def get_auth_url(user_id: int) -> str:
 
     client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
     flow = InstalledAppFlow.from_client_config(
-        client_config, SCOPES, redirect_uri=_redirect_uri()
+        client_config, SCOPES, redirect_uri="http://localhost"
     )
-    # state кодирует user_id чтобы callback мог найти flow.
-    # Случайный csrf-токен — защита от подмены state злоумышленником.
-    csrf = secrets.token_urlsafe(16)
-    state = f"{user_id}:{csrf}"
-    auth_url, _ = flow.authorization_url(
-        access_type="offline", prompt="consent", state=state
-    )
-    _pending_auth_flows[user_id] = (flow, auth_url, state, now)
+    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
+    _pending_auth_flows[user_id] = (flow, auth_url, "", now)
     return auth_url
-
-
-def find_user_by_state(state: str) -> int | None:
-    """Достаёт user_id из state-параметра OAuth callback. Валидирует CSRF."""
-    if not state or ":" not in state:
-        return None
-    try:
-        user_id = int(state.split(":", 1)[0])
-    except ValueError:
-        return None
-    entry = _pending_auth_flows.get(user_id)
-    if entry is None:
-        return None
-    _flow, _url, stored_state, _started = entry
-    if stored_state != state:
-        return None
-    return user_id
 
 
 def cancel_auth(user_id: int) -> bool:
@@ -333,10 +296,14 @@ def complete_auth(code: str, user_id: int) -> None:
     Завершает OAuth flow, принимая код авторизации от пользователя.
     Принимает как чистый код, так и полный URL вида http://localhost/?code=XXX&...
 
+    При ошибке flow НЕ удаляется — пользователь может просто переввести
+    /auth_code <код> повторно без нового /reauth (например, открыл ту же
+    ссылку, получил свежий код и прислал его).
+
     Сохраняет новый токен в файл и обновляет in-memory кэш.
     """
     global _credentials_cache
-    entry = _pending_auth_flows.pop(user_id, None)
+    entry = _pending_auth_flows.get(user_id)
     if entry is None:
         raise RuntimeError(
             "Нет активного auth-сеанса. Сначала вызови /reauth, "
@@ -354,7 +321,11 @@ def complete_auth(code: str, user_id: int) -> None:
             raise RuntimeError("В URL нет параметра ?code=...")
         code = codes[0]
 
+    # fetch_token может бросить — flow в _pending_auth_flows остаётся,
+    # пользователь может попробовать переввести код.
     flow.fetch_token(code=code)
+    # Успех — только теперь удаляем flow
+    _pending_auth_flows.pop(user_id, None)
     creds = flow.credentials
     _save_token(creds)
     _credentials_cache = creds
