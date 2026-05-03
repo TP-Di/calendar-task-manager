@@ -16,6 +16,8 @@ from app.db.database import clear_history
 from app.services.calendar import TokenExpiredError
 import app.services.calendar as cal
 import app.services.tasks as tasks_svc
+from app.services import categorize as cat
+from app.services import timeline as tl
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -280,36 +282,181 @@ async def btn_heatmap(message: Message) -> None:
     await cmd_heatmap(message)
 
 
+# ─── Shared helpers for text views ──────────────────────────────────────────
+
+
+def _routine_patterns() -> list[str]:
+    return [p.strip() for p in (config.ROUTINE_PATTERNS or "").split(",") if p.strip()]
+
+
+def _format_event_line(ev: dict, tz) -> str:
+    """  HH:MM[–HH:MM] — Название."""
+    start_iso = ev.get("start", "")
+    end_iso = ev.get("end", "")
+    title = cat.clean_title(ev.get("title", ""))
+    try:
+        sd = tl.parse_iso_dt(start_iso).astimezone(tz)
+        ed = tl.parse_iso_dt(end_iso).astimezone(tz)
+        same_day_end = ed.date() == sd.date()
+        if same_day_end:
+            return f"  {sd.strftime('%H:%M')}–{ed.strftime('%H:%M')} — {title}"
+        return f"  {sd.strftime('%H:%M')} — {title}"
+    except Exception:
+        return f"  {title}"
+
+
+def _render_day_block(d, day_events: list[dict], today, tz) -> list[str]:
+    """Рендерит '🗓 ДЕНЬ' + список событий + строку рутины."""
+    label = tl.day_label(d, today)
+    lines = [f"*🗓 {label}*"]
+    non_routine, counts = cat.collapse_routines(day_events, _routine_patterns())
+    if not non_routine and not counts:
+        lines.append("  свободно")
+        return lines
+    for ev in non_routine:
+        lines.append(_format_event_line(ev, tz))
+    routine = cat.routine_summary_line(counts)
+    if routine:
+        lines.append(routine)
+    return lines
+
+
+def _render_tasks_with_urgency(
+    tasks: list[dict], now: datetime, limit: int = 12, group_by_week: bool = False
+) -> list[str]:
+    """
+    Сортирует по due, маркирует urgency-emoji, добавляет «через Nд».
+    group_by_week=True → раскладывает по 'Эта неделя / След неделя / Позже'.
+    """
+    if not tasks:
+        return ["  нет активных задач ✅"]
+
+    enriched: list[tuple[str, int, dict, datetime | None]] = []  # (level, days_left, task, due_dt)
+    for t in tasks:
+        level, days_left = cat.task_urgency(
+            t, now, config.URGENT_TASK_DAYS, config.WARM_TASK_DAYS
+        )
+        due_dt = cat.parse_task_due(t.get("due", ""))
+        enriched.append((level, days_left, t, due_dt))
+
+    # Сортировка: задачи без due — в конец; с due — по возрастанию
+    def sort_key(item):
+        level, days_left, t, due_dt = item
+        # overdue первыми (отрицательный days_left), затем по due, затем без due
+        if due_dt is None:
+            return (1, 0)
+        return (0, days_left)
+    enriched.sort(key=sort_key)
+
+    def task_line(level: str, days_left: int, t: dict, due_dt: datetime | None) -> str:
+        emoji = cat.urgency_emoji(level)
+        title = cat.clean_title(t.get("title", ""))
+        if due_dt is not None:
+            return f"  {emoji} {title} → {cat.format_due_human(due_dt, now)}"
+        return f"  {emoji} {title}"
+
+    if not group_by_week:
+        return [task_line(*x) for x in enriched[:limit]]
+
+    today = now.date()
+    end_this_week = tl.end_of_iso_week(today)
+    end_next_week = end_this_week + timedelta(days=7)
+
+    sections: dict[str, list[str]] = {"🔥 Эта неделя": [], "📌 Следующая неделя": [], "📅 Позже": []}
+    for level, days_left, t, due_dt in enriched[:limit]:
+        line = task_line(level, days_left, t, due_dt)
+        if due_dt is None:
+            sections["📅 Позже"].append(line)
+            continue
+        d = due_dt.date()
+        if d <= end_this_week:
+            sections["🔥 Эта неделя"].append(line)
+        elif d <= end_next_week:
+            sections["📌 Следующая неделя"].append(line)
+        else:
+            sections["📅 Позже"].append(line)
+
+    out: list[str] = []
+    for header, items in sections.items():
+        if items:
+            out.append(f"\n*{header}*")
+            out.extend(items)
+    return out or ["  нет активных задач ✅"]
+
+
+# ─── Buttons ────────────────────────────────────────────────────────────────
+
+
 @router.message(F.text == "🗓 Что сегодня?")
 async def btn_today(message: Message) -> None:
-    """Показывает события на сегодня."""
-    now = datetime.now(ZoneInfo(config.TIMEZONE))
-    day_end = now.replace(hour=23, minute=59, second=59)
+    """Сегодня: события + свободные окна + задачи на эту неделю + сводка."""
+    tz = ZoneInfo(config.TIMEZONE)
+    now = datetime.now(tz)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end = day_start + timedelta(days=1) - timedelta(seconds=1)
+    week_end = tl.end_of_iso_week_dt(now)
+
+    # Параллельно тянем события и задачи
     try:
-        events = await cal.get_events(now.isoformat(), day_end.isoformat())
+        events = await cal.get_events(day_start.isoformat(), day_end.isoformat())
     except Exception as e:
         await _handle_error(message, e)
         return
-    if not events:
-        await message.answer("На сегодня событий нет ✅")
-        return
-    lines = ["*📅 Сегодня:*"]
-    for ev in events:
-        start = ev.get("start", "")
-        time_str = ""
-        if "T" in start:
-            try:
-                dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                time_str = dt.strftime("%H:%M") + " "
-            except Exception:
-                pass
-        lines.append(f"  • {time_str}{ev.get('title', '')}")
+    try:
+        tasks = await tasks_svc.get_tasks()
+    except Exception as e:
+        logger.warning("Tasks API failed for /today: %s", e)
+        tasks = []
+
+    label = tl.day_label(now.date(), now.date())
+    weekday_short = tl.WEEKDAYS_SHORT_RU[now.weekday()]
+    lines = [f"*🗓 {label}, {weekday_short}*\n"]
+
+    # События
+    non_routine, routine_counts = cat.collapse_routines(events, _routine_patterns())
+    lines.append("*📅 События:*")
+    if non_routine or routine_counts:
+        for ev in non_routine:
+            lines.append(_format_event_line(ev, tz))
+        routine = cat.routine_summary_line(routine_counts)
+        if routine:
+            lines.append(routine)
+    else:
+        lines.append("  свободный день ✅")
+
+    # Свободные окна
+    free_windows = tl.find_free_windows(
+        events, day_start, day_end,
+        config.WORK_HOUR_START, config.SLEEP_HOUR_START,
+        config.MIN_FREE_WINDOW_TODAY_HOURS,
+    )
+    if free_windows:
+        lines.append("\n*🟢 Свободные окна:*")
+        for s, e in free_windows:
+            dur = (e - s).total_seconds() / 3600
+            lines.append(f"  {s.strftime('%H:%M')}–{e.strftime('%H:%M')} ({tl.format_duration_short(dur)})")
+
+    # Задачи на эту неделю
+    week_tasks = [t for t in tasks if (cat.parse_task_due(t.get("due", "")) or datetime.max.replace(tzinfo=tz)) <= week_end]
+    if week_tasks:
+        lines.append("\n*📋 Задачи на эту неделю:*")
+        lines.extend(_render_tasks_with_urgency(week_tasks, now, limit=10))
+
+    # Сводка
+    busy = tl.busy_hours(non_routine, tz)
+    free_total = sum((e - s).total_seconds() / 3600 for s, e in free_windows)
+    summary_parts = [f"📊 {tl.format_duration_short(busy)} занято"]
+    if free_windows:
+        summary_parts.append(f"Свободно: {tl.format_duration_short(free_total)}")
+    summary_parts.append(f"Задач до {tl.WEEKDAYS_SHORT_RU[6]}: {len(week_tasks)}")
+    lines.append("\n" + " • ".join(summary_parts))
+
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
 @router.message(F.text == "📋 Задачи")
 async def btn_tasks(message: Message) -> None:
-    """Показывает активные задачи."""
+    """Активные задачи: сортировка по дедлайну, urgency-маркеры, группировка по неделям."""
     try:
         tasks = await tasks_svc.get_tasks()
     except Exception as e:
@@ -320,19 +467,7 @@ async def btn_tasks(message: Message) -> None:
         return
     now = datetime.now(ZoneInfo(config.TIMEZONE))
     lines = ["*📋 Активные задачи:*"]
-    for t in tasks[:15]:
-        due = t.get("due", "")
-        due_str = ""
-        prefix = "  •"
-        if due:
-            try:
-                due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
-                due_str = f" → {due_dt.strftime('%d.%m')}"
-                if due_dt < now:
-                    prefix = "  ⚠️"
-            except Exception:
-                pass
-        lines.append(f"{prefix} {t['title']}{due_str}")
+    lines.extend(_render_tasks_with_urgency(tasks, now, limit=20, group_by_week=True))
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
@@ -356,78 +491,79 @@ async def cmd_help(message: Message) -> None:
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
-    """Показывает активные задачи и ближайшие события."""
-    user_id = message.from_user.id
-    await message.answer("⏳ Загружаю данные...")
-
-    now = datetime.now(ZoneInfo(config.TIMEZONE))
+    """Шапка (сейчас/далее) + сводка + сегодня/завтра + задачи с urgency."""
+    tz = ZoneInfo(config.TIMEZONE)
+    now = datetime.now(tz)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    three_days_later = today_start + timedelta(days=3)
+    horizon = today_start + timedelta(days=2)  # сегодня + завтра
 
-    lines = ["📊 *Текущий статус*\n"]
-
-    # Ближайшие события
     try:
-        events = await cal.get_events(now.isoformat(), three_days_later.isoformat())
-        lines.append("*📅 Ближайшие события (3 дня):*")
-        if events:
-            for ev in events[:8]:
-                start = ev.get("start", "")
-                time_str = ""
-                if "T" in start:
-                    try:
-                        dt = datetime.fromisoformat(start.replace("Z", "+00:00"))
-                        time_str = dt.strftime("%d.%m %H:%M")
-                    except Exception:
-                        time_str = start
-                title = ev.get("title", "")
-                lines.append(f"  • {time_str} — {title}")
-        else:
-            lines.append("  Нет событий")
+        events = await cal.get_events(today_start.isoformat(), horizon.isoformat())
     except Exception as e:
-        logger.error("Ошибка Calendar API (/status): %s", e)
-        lines.append("  ❌ Ошибка загрузки событий")
-
-    # Активные задачи
-    lines.append("")
+        await _handle_error(message, e)
+        return
     try:
         tasks = await tasks_svc.get_tasks()
-        lines.append("*📋 Активные задачи:*")
-        if tasks:
-            # Сортируем: просроченные в топе
-            overdue = []
-            normal = []
-            for t in tasks:
-                due = t.get("due", "")
-                if due:
-                    try:
-                        due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
-                        if due_dt < now:
-                            overdue.append(t)
-                            continue
-                    except Exception:
-                        pass
-                normal.append(t)
-
-            for t in overdue:
-                lines.append(f"  ⚠️ {t['title']}")
-            for t in normal[:10]:
-                due = t.get("due", "")
-                due_str = ""
-                if due:
-                    try:
-                        due_dt = datetime.fromisoformat(due.replace("Z", "+00:00"))
-                        due_str = f" → {due_dt.strftime('%d.%m')}"
-                    except Exception:
-                        pass
-                lines.append(f"  • {t['title']}{due_str}")
-        else:
-            lines.append("  Нет активных задач ✅")
     except Exception as e:
-        logger.error("Ошибка Tasks API (/status): %s", e)
-        lines.append("  ❌ Ошибка загрузки задач")
+        logger.warning("Tasks API failed for /status: %s", e)
+        tasks = []
 
-    await message.answer("\n".join(lines), parse_mode="Markdown")
+    lines: list[str] = []
+
+    # Шапка: сейчас или ближайшее
+    current = tl.event_now(events, now)
+    if current:
+        title = cat.clean_title(current.get("title", ""))
+        try:
+            ed = tl.parse_iso_dt(current.get("end", "")).astimezone(tz)
+            lines.append(f"🔴 *Сейчас:* {title} (до {ed.strftime('%H:%M')})")
+        except Exception:
+            lines.append(f"🔴 *Сейчас:* {title}")
+    else:
+        upcoming = tl.next_event_after(events, now)
+        if upcoming:
+            ev, td = upcoming
+            title = cat.clean_title(ev.get("title", ""))
+            try:
+                sd = tl.parse_iso_dt(ev.get("start", "")).astimezone(tz)
+                t_str = sd.strftime("%H:%M")
+            except Exception:
+                t_str = "?"
+            lines.append(f"⏭ {tl.format_time_until(td)} — *{title}* ({t_str})")
+        else:
+            lines.append("⏭ На сегодня и завтра событий нет")
+
+    # Сводка
+    today_events = [
+        ev for ev in events
+        if (tl.parse_iso_dt(ev.get("start", "")).astimezone(tz).date() if ev.get("start") else None) == now.date()
+    ]
+    today_non_routine, _ = cat.collapse_routines(today_events, _routine_patterns())
+    today_busy = tl.busy_hours(today_non_routine, tz)
+    burning_count = sum(
+        1 for t in tasks
+        if cat.task_urgency(t, now, config.URGENT_TASK_DAYS, config.WARM_TASK_DAYS)[0]
+        in ("overdue", "burning")
+    )
+    lines.append(
+        f"📊 Сегодня: {len(today_non_routine)} событий, "
+        f"{tl.format_duration_short(today_busy)} занято • Горящих задач: {burning_count}"
+    )
+    lines.append("")
+
+    # События по дням (сегодня + завтра)
+    grouped = tl.group_events_by_day(events, tz)
+    if not grouped:
+        lines.append("*🗓 События:* нет")
+    for d, day_events in grouped[:2]:
+        lines.extend(_render_day_block(d, day_events, now.date(), tz))
+        lines.append("")
+
+    # Задачи с urgency
+    lines.append("*📋 Задачи:*")
+    lines.extend(_render_tasks_with_urgency(tasks, now, limit=12))
+
+    await message.answer("\n".join(lines).rstrip(), parse_mode="Markdown")
 
 
 @router.message(Command("load"))
