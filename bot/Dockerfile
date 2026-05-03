@@ -9,9 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Создаём непривилегированного пользователя
-RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 botuser
-
 # Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -19,10 +16,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копируем исходный код
 COPY . .
 
-# Директория для данных
-RUN mkdir -p data/backups && chown -R botuser:botuser /app
+# Директория для данных (SQLite + бэкапы + runtime.env)
+RUN mkdir -p data/backups
 
-USER botuser
-
-# Запуск
+# Запуск под root: bind-mount .env и named volume data/ должны быть writable
+# для процесса бота. Non-root user приводил к permission denied на хостовых
+# файлах (uid mismatch). Контейнер изолирован — root внутри ≠ root на хосте.
 CMD ["python", "main.py"]

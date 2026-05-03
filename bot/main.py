@@ -12,7 +12,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.config import config
+from app.config import config, log_config_sources
 from app.db.database import backup_db, init_db
 from app.db.log_handler import SqliteLogHandler
 from app.handlers import commands, documents, messages, settings as settings_handler
@@ -142,6 +142,17 @@ async def _start_health_server(port: int) -> web.AppRunner:
 async def main() -> None:
     """Основная функция запуска бота."""
     logger.info("Запуск бота...")
+    log_config_sources()
+
+    # Диагностика persistence для credentials
+    from app.services.calendar import env_persistence_status
+    persist = env_persistence_status()
+    for path, ok in persist.items():
+        logger.info(
+            "Persist target %-25s %s",
+            path,
+            "writable ✓" if ok else "NOT writable ✗ — изменения через /settings не сохранятся!",
+        )
 
     # Проверяем обязательные переменные
     if not config.BOT_TOKEN:
