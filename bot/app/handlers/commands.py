@@ -2,6 +2,7 @@
 Обработчики команд: /start /help /status /load /done /postpone /clear /heatmap
 """
 
+import asyncio
 import io
 import logging
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,23 @@ MAIN_KB = ReplyKeyboardMarkup(
 
 
 async def _generate_heatmap_image(
+    events: list, tz_str: str, days: int = 7,
+    week_start: "datetime | None" = None,
+    tasks: list | None = None,
+) -> bytes:
+    """Wrapper, гарантирующий закрытие matplotlib figures даже при исключении."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        return await _generate_heatmap_impl(events, tz_str, days, week_start, tasks)
+    finally:
+        # Закрываем ВСЕ незакрытые figures (utility cleanup) на случай если impl
+        # упал между plt.figure() и plt.close().
+        plt.close("all")
+
+
+async def _generate_heatmap_impl(
     events: list, tz_str: str, days: int = 7,
     week_start: "datetime | None" = None,
     tasks: list | None = None,
@@ -390,7 +408,13 @@ async def _generate_heatmap_image(
 
     plt.tight_layout(pad=1.5)
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    # H8: dpi=100 для контроля размера. Telegram лимит 10 MB на photo;
+    # если PNG > 9 MB — перерендер с dpi=70.
+    plt.savefig(buf, format="png", dpi=100, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    if buf.tell() > 9_000_000:
+        buf.seek(0)
+        buf.truncate()
+        plt.savefig(buf, format="png", dpi=70, bbox_inches="tight", facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -871,22 +895,35 @@ async def cmd_clear(message: Message) -> None:
     )
 
 
+def _is_owner(message: Message) -> bool:
+    return bool(message.from_user) and message.from_user.id == config.OWNER_ID
+
+
 @router.message(Command("settings"))
 async def cmd_settings(message: Message) -> None:
-    """Открывает интерактивное меню настроек."""
+    """Открывает интерактивное меню настроек (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     from app.handlers.settings import send_settings_menu
     await send_settings_menu(message)
 
 
 @router.message(Command("reauth"))
 async def cmd_reauth(message: Message) -> None:
-    """Генерирует ссылку для повторной авторизации Google."""
+    """Генерирует ссылку для повторной авторизации Google (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     await send_token_expired(message)
 
 
 @router.message(Command("auth_code"))
 async def cmd_auth_code(message: Message) -> None:
-    """Принимает код авторизации Google и сохраняет токен."""
+    """Принимает код авторизации Google и сохраняет токен (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await message.answer("Использование: `/auth_code КОД`", parse_mode="Markdown")
@@ -894,7 +931,8 @@ async def cmd_auth_code(message: Message) -> None:
     code = parts[1].strip()
     user_id = message.from_user.id
     try:
-        cal.complete_auth(code, user_id)
+        # complete_auth делает HTTP-запрос к Google + файловые операции — выносим в поток
+        await asyncio.to_thread(cal.complete_auth, code, user_id)
         await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
     except Exception as e:
         logger.error("Ошибка при обмене кода авторизации: %s", e)
@@ -937,10 +975,14 @@ async def cmd_heatmap(message: Message) -> None:
 
     photo = BufferedInputFile(img_bytes, filename="heatmap.png")
     date_range = f"{fetch_start.strftime('%d.%m')} – {(fetch_end - timedelta(days=1)).strftime('%d.%m')}"
-    await message.answer_photo(
-        photo,
-        caption=(
-            f"📊 Расписание: {date_range}\n"
-            "Цвета — категории · обводка ■ — нельзя двигать · 🚗 — рутина · 🟢 — свободно · 📌 — дедлайны"
-        ),
-    )
+    try:
+        await message.answer_photo(
+            photo,
+            caption=(
+                f"📊 Расписание: {date_range}\n"
+                "Цвета — категории · обводка ■ — нельзя двигать · 🚗 — рутина · 🟢 — свободно · 📌 — дедлайны"
+            ),
+        )
+    except Exception as e:
+        logger.error("Ошибка отправки heatmap: %s", e)
+        await message.answer(f"❌ Не удалось отправить изображение: {e}")

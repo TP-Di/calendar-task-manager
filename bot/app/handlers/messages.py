@@ -8,7 +8,9 @@ import copy
 import json
 import logging
 import re
+import time
 import zoneinfo as _zi
+from collections import deque
 from datetime import datetime as _dt, date as _date, timedelta
 
 from aiogram import F, Router
@@ -30,14 +32,84 @@ from app.services import reschedule as reschedule_svc
 logger = logging.getLogger(__name__)
 router = Router()
 
+# TTL для in-memory сессий: бросаемые pending'и автоматически чистятся через 30 мин.
+_SESSION_TTL = 1800.0
+
+
+class _TTLDict(dict):
+    """Прозрачная dict-подобная структура с TTL на каждом элементе.
+    Drop-in замена обычного dict — поддерживает [], get, pop, in.
+    """
+
+    def __init__(self, ttl: float = _SESSION_TTL):
+        super().__init__()
+        self._ttl = ttl
+        self._stamps: dict = {}
+
+    def _expired(self, k) -> bool:
+        ts = self._stamps.get(k)
+        if ts is None:
+            return False
+        return time.monotonic() - ts > self._ttl
+
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v)
+        self._stamps[k] = time.monotonic()
+
+    def __getitem__(self, k):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            raise KeyError(k)
+        return super().__getitem__(k)
+
+    def get(self, k, default=None):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            return default
+        return super().get(k, default)
+
+    def pop(self, k, *args):
+        expired = self._expired(k)
+        self._stamps.pop(k, None)
+        if expired:
+            super().pop(k, None)
+            return args[0] if args else None
+        return super().pop(k, *args)
+
+    def __contains__(self, k):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            return False
+        return super().__contains__(k)
+
+
 # Хранилище ожидающих подтверждения tool calls: user_id -> pending_data
-_pending_confirmations: dict[int, dict] = {}
-
+_pending_confirmations: _TTLDict = _TTLDict()
 # message_id диалога подтверждения: user_id -> (chat_id, message_id)
-_pending_confirm_msgs: dict[int, tuple[int, int]] = {}
-
+_pending_confirm_msgs: _TTLDict = _TTLDict()
 # Хранилище grid-сессий выбора слота: user_id -> session
-_grid_sessions: dict[int, dict] = {}
+_grid_sessions: _TTLDict = _TTLDict()
+
+# ─── Rate limiting ─────────────────────────────────────────────────────────────
+_RATE_LIMIT = 5        # max messages per user per window
+_RATE_WINDOW = 60.0    # window in seconds
+_user_rate: dict[int, "deque[float]"] = {}
+
+
+def _check_rate_limit(user_id: int) -> bool:
+    """Returns True if request is allowed, False if rate limit exceeded."""
+    now = time.monotonic()
+    q = _user_rate.setdefault(user_id, deque())
+    while q and now - q[0] > _RATE_WINDOW:
+        q.popleft()
+    if len(q) >= _RATE_LIMIT:
+        return False
+    q.append(now)
+    return True
+
 
 # ─── Grid constants ────────────────────────────────────────────────────────────
 _GRID_START = 9    # 09:00
@@ -246,12 +318,44 @@ async def _fetch_day_events(date_str: str) -> list[dict]:
 
 # ─── Main agent response handler ──────────────────────────────────────────────
 
+_TG_MAX = 4000  # safety margin под 4096-байтный лимит Telegram
+
+
+def _split_long(text: str, limit: int = _TG_MAX) -> list[str]:
+    """Режет длинный текст по \\n\\n / \\n на части ≤ limit символов."""
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        # Сначала пробуем разрезать по двойному переводу
+        cut = remaining.rfind("\n\n", 0, limit)
+        if cut < limit // 2:
+            cut = remaining.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+async def _send_safe(message: Message, text: str) -> None:
+    """Отправляет текст с разбивкой на куски ≤ _TG_MAX. Markdown с фолбэком на plain."""
+    for chunk in _split_long(text):
+        try:
+            await message.answer(chunk, parse_mode="Markdown")
+        except Exception:
+            try:
+                await message.answer(chunk, parse_mode=None)
+            except Exception as e:
+                logger.error("Не удалось отправить чанк: %s", e)
+
+
 async def handle_agent_response(message: Message, response: str, user_id: int) -> None:
     if not response.startswith("PENDING_TOOL::"):
-        try:
-            await message.answer(response, parse_mode="Markdown")
-        except Exception:
-            await message.answer(response, parse_mode=None)
+        await _send_safe(message, response)
         return
 
     json_str = response[len("PENDING_TOOL::"):]
@@ -384,6 +488,9 @@ async def handle_grid_day_nav(callback: CallbackQuery) -> None:
 
     try:
         events = await _fetch_day_events(new_date_str)
+    except TokenExpiredError:
+        await send_token_expired(callback.message)
+        return
     except Exception as _e:
         logger.warning("Не удалось загрузить события для %s: %s", new_date_str, _e)
         events = []
@@ -662,6 +769,12 @@ async def handle_text_message(message: Message) -> None:
     user_id   = message.from_user.id
     user_text = message.text.strip()
     if not user_text:
+        return
+
+    if not _check_rate_limit(user_id):
+        await message.answer(
+            f"⏳ Слишком много запросов. Лимит: {_RATE_LIMIT} сообщений в минуту."
+        )
         return
 
     _pending_confirmations.pop(user_id, None)

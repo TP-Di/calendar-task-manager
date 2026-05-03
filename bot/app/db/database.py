@@ -2,11 +2,9 @@
 База данных: инициализация, история диалога, контекст пользователя, бэкап
 """
 
-import asyncio
 import json
 import logging
 import os
-import shutil
 from datetime import datetime, timezone
 
 import aiosqlite
@@ -117,22 +115,34 @@ async def get_user_context(user_id: int) -> dict:
 
 
 async def update_user_context(user_id: int, data: dict) -> None:
-    """Обновляет контекст пользователя (merge с существующим)."""
-    current = await get_user_context(user_id)
-    current.update(data)
+    """Обновляет контекст пользователя (merge с существующим). Атомарно через BEGIN IMMEDIATE."""
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO user_context (user_id, context_json, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                context_json = excluded.context_json,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, json.dumps(current, ensure_ascii=False), now),
-        )
-        await db.commit()
+        # Lock writer-side, чтобы read-modify-write не race'ил с другим writer
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT context_json FROM user_context WHERE user_id = ?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            current = json.loads(row["context_json"]) if row else {}
+            current.update(data)
+            await db.execute(
+                """
+                INSERT INTO user_context (user_id, context_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    context_json = excluded.context_json,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, json.dumps(current, ensure_ascii=False), now),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 # ---------------------------------------------------------------------------
@@ -141,11 +151,29 @@ async def update_user_context(user_id: int, data: dict) -> None:
 
 
 async def backup_db() -> None:
-    """Создаёт бэкап SQLite в data/backups/ с датой в имени файла."""
+    """
+    Создаёт бэкап SQLite через Backup API (WAL-safe).
+    Ротация: оставляем последние 30 файлов.
+    """
     backup_dir = os.path.join(os.path.dirname(config.DB_PATH), "backups")
     os.makedirs(backup_dir, exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
     backup_path = os.path.join(backup_dir, f"bot_{date_str}.db")
-    # Используем aiosqlite для безопасного бэкапа через отдельный поток
-    await asyncio.to_thread(shutil.copy2, config.DB_PATH, backup_path)
+
+    # SQLite Backup API через aiosqlite — корректно работает с WAL
+    async with aiosqlite.connect(config.DB_PATH) as src, \
+               aiosqlite.connect(backup_path) as dst:
+        await src.backup(dst)
     logger.info("Бэкап базы данных: %s", backup_path)
+
+    # Ротация: keep last 30
+    try:
+        files = sorted(
+            f for f in os.listdir(backup_dir)
+            if f.startswith("bot_") and f.endswith(".db")
+        )
+        for old in files[:-30]:
+            os.remove(os.path.join(backup_dir, old))
+            logger.debug("Удалён старый бэкап: %s", old)
+    except Exception as e:
+        logger.warning("Не удалось ротировать бэкапы: %s", e)

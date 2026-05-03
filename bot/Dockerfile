@@ -9,6 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
+# Создаём непривилегированного пользователя
+RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 botuser
+
 # Копируем зависимости и устанавливаем
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -17,7 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Директория для данных
-RUN mkdir -p data/backups
+RUN mkdir -p data/backups && chown -R botuser:botuser /app
+
+USER botuser
 
 # Запуск
 CMD ["python", "main.py"]

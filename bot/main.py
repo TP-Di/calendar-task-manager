@@ -132,7 +132,8 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
 async def _start_health_server(port: int) -> web.AppRunner:
     """Запускает aiohttp health check сервер для DigitalOcean."""
     async def handle(_request: web.Request) -> web.Response:
-        return web.Response(text=f"v{config.VERSION}")
+        # Не раскрываем версию: probe нужен только для health check
+        return web.Response(text="OK")
 
     app = web.Application()
     app.router.add_get("/", handle)
@@ -154,6 +155,35 @@ async def main() -> None:
         raise ValueError("GROQ_API_KEY не задан в .env")
     if not config.ALLOWED_IDS:
         logger.warning("ALLOWED_IDS пуст — доступ заблокирован для всех!")
+
+    # Валидация TIMEZONE — иначе APScheduler упадёт с невнятной ошибкой
+    try:
+        from zoneinfo import ZoneInfo
+        ZoneInfo(config.TIMEZONE)
+    except Exception as e:
+        raise ValueError(
+            f"Некорректный TIMEZONE='{config.TIMEZONE}'. "
+            "Используйте IANA-имя, например 'Europe/Moscow', 'Asia/Almaty', 'UTC'."
+        ) from e
+
+    # Валидация BRIEFING_TIME формата HH:MM
+    try:
+        bh, bm = map(int, config.BRIEFING_TIME.split(":"))
+        if not (0 <= bh < 24 and 0 <= bm < 60):
+            raise ValueError
+    except Exception:
+        logger.warning(
+            "Некорректный BRIEFING_TIME='%s' — будет использован 08:00",
+            config.BRIEFING_TIME,
+        )
+
+    # Валидация LLM_PROVIDER
+    if config.LLM_PROVIDER not in ("groq", "google"):
+        logger.warning(
+            "Неизвестный LLM_PROVIDER='%s' — fallback на 'groq'",
+            config.LLM_PROVIDER,
+        )
+        config.LLM_PROVIDER = "groq"
 
     # Создаём директорию для данных если не существует
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)

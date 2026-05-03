@@ -21,9 +21,17 @@ class Config:
         for x in os.getenv("ALLOWED_IDS", "").split(",")
         if x.strip().isdigit()
     ]
+    # OWNER_ID — единственный пользователь, кому разрешено /settings и /reauth.
+    # По умолчанию — первый user из ALLOWED_IDS, можно переопределить через env.
+    OWNER_ID: int = (
+        int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID", "").strip().isdigit()
+        else (int(os.getenv("ALLOWED_IDS", "0").split(",")[0])
+              if os.getenv("ALLOWED_IDS", "").split(",")[0].strip().isdigit()
+              else 0)
+    )
 
-    # LLM провайдер: "groq" или "google"
-    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")
+    # LLM провайдер: "groq" или "google" (валидируется в main.py при старте)
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq").lower()
 
     # Groq
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
@@ -42,7 +50,7 @@ class Config:
     GOOGLE_TOKEN_PATH: str = os.getenv("GOOGLE_TOKEN_PATH", "data/token.json")
 
     # Расписание
-    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "06:00")  # HH:MM локального времени (TIMEZONE)
+    BRIEFING_TIME: str = os.getenv("BRIEFING_TIME", "08:00")  # HH:MM локального времени (TIMEZONE)
     REMINDER_INTERVAL_HOURS: int = int(os.getenv("REMINDER_INTERVAL_HOURS", "1"))
     # Рабочие часы (для агента и подсказок)
     WORK_HOUR_START: int = int(os.getenv("WORK_HOUR_START", "9"))
