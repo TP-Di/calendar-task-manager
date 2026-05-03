@@ -12,6 +12,9 @@ services:
     volumes:
       # Постоянное хранилище: SQLite БД и Google токены
       - bot_data:/app/data
+      # Bind-mount .env — изменения из /settings пишутся в файл на хосте
+      # и переживают `docker-compose up --build`
+      - ./bot/.env:/app/.env
     logging:
       driver: "json-file"
       options:

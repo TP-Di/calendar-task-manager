@@ -52,8 +52,11 @@ async def send_token_expired(message: Message) -> None:
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📊 Статус"), KeyboardButton(text="📅 Нагрузка")],
-        [KeyboardButton(text="🗓 Что сегодня?"), KeyboardButton(text="📋 Задачи")],
+        [
+            KeyboardButton(text="📊 Статус"),
+            KeyboardButton(text="🗓 Сегодня"),
+            KeyboardButton(text="📅 Нагрузка"),
+        ],
     ],
     resize_keyboard=True,
     input_field_placeholder="Напиши или выбери действие...",
@@ -547,7 +550,7 @@ def _render_tasks_with_urgency(
 # ─── Buttons ────────────────────────────────────────────────────────────────
 
 
-@router.message(F.text == "🗓 Что сегодня?")
+@router.message(F.text == "🗓 Сегодня")
 async def btn_today(message: Message) -> None:
     """Сегодня: события + свободные окна + задачи на эту неделю + сводка."""
     tz = ZoneInfo(config.TIMEZONE)
@@ -614,40 +617,20 @@ async def btn_today(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
-@router.message(F.text == "📋 Задачи")
-async def btn_tasks(message: Message) -> None:
-    """Активные задачи: сортировка по дедлайну, urgency-маркеры, группировка по неделям."""
-    try:
-        tasks = await tasks_svc.get_tasks()
-    except Exception as e:
-        await _handle_error(message, e)
-        return
-    if not tasks:
-        await message.answer("Активных задач нет ✅")
-        return
-    now = datetime.now(ZoneInfo(config.TIMEZONE))
-    lines = ["*📋 Активные задачи:*"]
-    lines.extend(_render_tasks_with_urgency(tasks, now, limit=20, group_by_week=True))
-    await message.answer("\n".join(lines), parse_mode="Markdown")
-
-
 @router.message(Command("help"))
 async def cmd_help(message: Message) -> None:
     """Список доступных команд."""
     text = (
         "📖 *Справка*\n\n"
-        "Пиши свободным текстом — я пойму («перенеси встречу», «добавь дедлайн на пятницу»).\n\n"
+        "Пиши свободным текстом — я пойму («перенеси встречу», «добавь дедлайн на пятницу», «покажи задачи»).\n\n"
         "*Кнопки на клавиатуре:*\n"
         "📊 Статус — что сейчас/далее, события на сегодня и завтра, горящие задачи\n"
-        "📅 Нагрузка — визуальный график недели с категориями и дедлайнами\n"
-        "🗓 Что сегодня? — события + свободные окна + задачи на эту неделю\n"
-        "📋 Задачи — все активные, по неделям\n\n"
+        "🗓 Сегодня — события + свободные окна + задачи на эту неделю\n"
+        "📅 Нагрузка — визуальный график недели с категориями и дедлайнами\n\n"
         "*Команды:*\n"
-        "/load — текстовая сводка нагрузки по дням и категориям\n"
-        "/done <название> — отметить задачу выполненной\n"
-        "/postpone <название> <время> — отложить задачу\n"
         "/upload — загрузить PDF с расписанием\n"
-        "/settings — настройки (LLM, ключи, часы, визуализация)\n"
+        "/heatmap — график недели\n"
+        "/settings — настройки (LLM, ключи, часы)\n"
         "/reauth — переавторизация Google Calendar\n"
         "/clear — сбросить историю диалога"
     )
