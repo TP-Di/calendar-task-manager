@@ -386,14 +386,24 @@ def _ai_text() -> str:
 
 
 def _keys_text() -> str:
+    from app.services.calendar import env_persistence_status
     groq_masked   = _mask_key(config.GROQ_API_KEY)
     google_masked = _mask_key(config.GOOGLE_AI_KEY)
     gcal_status   = "задан ✅" if config.GOOGLE_CREDENTIALS_JSON else "(не задан) ⚠️"
+
+    persist = env_persistence_status()
+    persist_lines = "\n".join(
+        f"  {'✅' if ok else '❌'} `{path}`"
+        for path, ok in persist.items()
+    )
     return (
         "🔑 *API ключи*\n\n"
         f"*Groq API key:* `{groq_masked}`\n"
         f"*Google AI key:* `{google_masked}`\n"
-        f"*Google Calendar creds:* `{gcal_status}`"
+        f"*Google Calendar creds:* `{gcal_status}`\n\n"
+        "*Персистентность настроек:*\n"
+        f"{persist_lines}\n"
+        "_Если оба ❌ — после rebuild ключи придётся вводить заново._"
     )
 
 

@@ -122,23 +122,27 @@ def _save_token(creds: "Credentials") -> None:
 
 def _update_env_file(key: str, value: str) -> None:
     """
-    Сохраняет ключ в персистентные .env-файлы:
-    1. data/runtime.env (Docker volume — основное хранилище)
-    2. .env (если writable — переживает rebuild без volume)
+    Сохраняет ключ в персистентные .env-файлы (best-effort оба, не падаем):
+    1. data/runtime.env — основное хранилище (Docker volume / локальная FS)
+    2. .env — переживает rebuild без volume (если bind-mounted на хост)
 
-    Атомарно: пишем во временный файл, потом os.replace.
-    Thread-safe: серилизуем через _env_lock.
+    Атомарно: tmp + os.replace. Thread-safe через _env_lock.
+    Логирует результат каждого таргета — для диагностики см. bot_logs.
     """
-    targets = [os.path.join("data", "runtime.env")]
-    # .env в корне (опционально) — если writable, дублируем для переживания rebuild
-    if os.path.exists(".env") and os.access(".env", os.W_OK):
-        targets.append(".env")
-
     # Sanitize: strip newlines, escape backslashes then double-quotes
     safe = value.replace("\n", "").replace("\r", "")
     safe = safe.replace("\\", "\\\\").replace('"', '\\"')
     new_line = f'{key}="{safe}"\n'
 
+    targets = [os.path.join("data", "runtime.env"), ".env"]
+    results = _write_env_targets(key, new_line, targets)
+    summary = ", ".join(f"{t}={'✓' if ok else '✗'}" for t, ok in results.items())
+    logger.info("update_env_file %s → %s", key, summary)
+
+
+def _write_env_targets(key: str, new_line: str, targets: list[str]) -> dict[str, bool]:
+    """Записывает new_line во все targets. Возвращает {path: success}."""
+    results: dict[str, bool] = {}
     with _env_lock:
         for target in targets:
             try:
@@ -146,8 +150,15 @@ def _update_env_file(key: str, value: str) -> None:
                 if target_dir:
                     os.makedirs(target_dir, exist_ok=True)
 
+                # Защита: если по пути директория (например, Docker создал её
+                # вместо отсутствующего bind-mount source) — это не файл, пропускаем.
+                if os.path.exists(target) and not os.path.isfile(target):
+                    logger.warning("Пропуск %s: путь существует, но не файл", target)
+                    results[target] = False
+                    continue
+
                 lines: list[str] = []
-                if os.path.exists(target):
+                if os.path.isfile(target):
                     with open(target, "r", encoding="utf-8") as f:
                         lines = f.readlines()
 
@@ -164,10 +175,31 @@ def _update_env_file(key: str, value: str) -> None:
                 with open(tmp_path, "w", encoding="utf-8") as f:
                     f.writelines(lines)
                 os.replace(tmp_path, target)
-
-                logger.info("Обновлён %s в %s", key, target)
+                results[target] = True
             except Exception as e:
-                logger.error("Ошибка обновления %s: %s", target, e)
+                logger.warning("Не удалось записать %s: %s", target, e)
+                results[target] = False
+    return results
+
+
+def env_persistence_status() -> dict[str, bool]:
+    """Диагностика для /settings: возвращает {target: writable}."""
+    status: dict[str, bool] = {}
+    for target in [os.path.join("data", "runtime.env"), ".env"]:
+        try:
+            target_dir = os.path.dirname(target) or "."
+            # writable, если файл существует и доступен на запись, ИЛИ
+            # директория существует и доступна на запись (можем создать файл).
+            if os.path.isfile(target):
+                status[target] = os.access(target, os.W_OK)
+            elif os.path.isdir(target):
+                # Это плохо — но честно показываем что это не файл
+                status[target] = False
+            else:
+                status[target] = os.path.isdir(target_dir) and os.access(target_dir, os.W_OK)
+        except Exception:
+            status[target] = False
+    return status
 
 
 def _get_credentials() -> "Credentials":
