@@ -41,9 +41,13 @@ async def send_token_expired(message: Message) -> None:
         text = (
             "🔑 *Google токен истёк или был отозван*\n\n"
             "Для повторной авторизации:\n"
-            f"1\\. Перейди по ссылке: [Авторизоваться в Google]({auth_url})\n"
-            "2\\. Разреши доступ и скопируй код\n"
-            "3\\. Отправь боту: `/auth_code КОД`"
+            f"1\\. Перейди по [этой ссылке]({auth_url}) и разреши доступ\n"
+            "2\\. После этого браузер перебросит на `http://localhost/...` — "
+            "страница НЕ откроется \\(это нормально\\)\n"
+            "3\\. Скопируй ВСЮ ссылку из адресной строки и пришли её боту "
+            "командой `/auth_code <ссылка>`\n\n"
+            "_Бот сам извлечёт code из URL\\. Или можно скопировать только "
+            "значение `code=` и отправить его\\._"
         )
         await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
     except Exception as e:
@@ -919,8 +923,18 @@ async def cmd_auth_code(message: Message) -> None:
         await asyncio.to_thread(cal.complete_auth, code, user_id)
         await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
     except Exception as e:
-        logger.error("Ошибка при обмене кода авторизации: %s", e)
-        await message.answer("❌ Ошибка авторизации. Проверь код и попробуй снова через /reauth", parse_mode="Markdown")
+        logger.error("Ошибка при обмене кода авторизации: %s", e, exc_info=True)
+        # Показываем краткое описание ошибки чтобы было понятно что не так.
+        # Полный traceback уже в логе (доступен по SSH через bot_logs).
+        err_msg = str(e) or type(e).__name__
+        # Усечём слишком длинные tracebacks
+        if len(err_msg) > 500:
+            err_msg = err_msg[:500] + "..."
+        await message.answer(
+            f"❌ Ошибка авторизации:\n`{err_msg}`\n\n"
+            "Попробуй заново: /reauth",
+            parse_mode="Markdown",
+        )
 
 
 @router.message(Command("heatmap"))
