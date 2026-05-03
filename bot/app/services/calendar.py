@@ -250,8 +250,21 @@ def _get_credentials() -> "Credentials":
 # Per-user flow + URL pairs. URL стабилен между повторными вызовами /reauth,
 # чтобы не было state mismatch если пользователь дважды нажал кнопку.
 # Запись чистится через _AUTH_FLOW_TTL секунд.
+# Структура: user_id -> (flow, auth_url, state, started_at)
 _AUTH_FLOW_TTL = 900.0  # 15 мин
-_pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, float]] = {}
+_pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, str, float]] = {}
+
+
+def is_callback_flow_enabled() -> bool:
+    """True если настроен OAUTH_PUBLIC_URL — используем web-callback flow."""
+    return bool((config.OAUTH_PUBLIC_URL or "").strip())
+
+
+def _redirect_uri() -> str:
+    """Возвращает redirect_uri для OAuth flow."""
+    if is_callback_flow_enabled():
+        return f"{config.OAUTH_PUBLIC_URL.rstrip('/')}/oauth/callback"
+    return "http://localhost"
 
 
 def get_auth_url(user_id: int) -> str:
@@ -262,29 +275,52 @@ def get_auth_url(user_id: int) -> str:
     (тот же state) — иначе пользователь, нажавший /reauth дважды, мог получить
     state mismatch на /auth_code от первой ссылки.
 
-    Использует http://localhost как redirect_uri — Google прекратил поддержку
-    OOB-flow (urn:ietf:wg:oauth:2.0:oob) в октябре 2022. После consent браузер
-    перенаправит на localhost (страница не откроется, но URL содержит ?code=...).
+    Если задан OAUTH_PUBLIC_URL — redirect_uri ведёт на /oauth/callback бота
+    и пользователь не должен ничего копировать вручную. Иначе fallback на
+    http://localhost (Google прекратил поддержку OOB-flow в октябре 2022).
     """
     import time as _time
+    import secrets
     now = _time.monotonic()
 
     # Если есть активный (не просроченный) flow — возвращаем его URL
     entry = _pending_auth_flows.get(user_id)
     if entry is not None:
-        flow, url, started = entry
+        _flow, url, _state, started = entry
         if now - started < _AUTH_FLOW_TTL:
             return url
-        # Просрочен — пересоздаём
         _pending_auth_flows.pop(user_id, None)
 
     client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
     flow = InstalledAppFlow.from_client_config(
-        client_config, SCOPES, redirect_uri="http://localhost"
+        client_config, SCOPES, redirect_uri=_redirect_uri()
     )
-    auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
-    _pending_auth_flows[user_id] = (flow, auth_url, now)
+    # state кодирует user_id чтобы callback мог найти flow.
+    # Случайный csrf-токен — защита от подмены state злоумышленником.
+    csrf = secrets.token_urlsafe(16)
+    state = f"{user_id}:{csrf}"
+    auth_url, _ = flow.authorization_url(
+        access_type="offline", prompt="consent", state=state
+    )
+    _pending_auth_flows[user_id] = (flow, auth_url, state, now)
     return auth_url
+
+
+def find_user_by_state(state: str) -> int | None:
+    """Достаёт user_id из state-параметра OAuth callback. Валидирует CSRF."""
+    if not state or ":" not in state:
+        return None
+    try:
+        user_id = int(state.split(":", 1)[0])
+    except ValueError:
+        return None
+    entry = _pending_auth_flows.get(user_id)
+    if entry is None:
+        return None
+    _flow, _url, stored_state, _started = entry
+    if stored_state != state:
+        return None
+    return user_id
 
 
 def cancel_auth(user_id: int) -> bool:
@@ -306,7 +342,7 @@ def complete_auth(code: str, user_id: int) -> None:
             "Нет активного auth-сеанса. Сначала вызови /reauth, "
             "перейди по ссылке и потом пришли URL обратно."
         )
-    flow, _url, _started = entry
+    flow, _url, _state, _started = entry
 
     # Если пользователь вставил полный URL — извлекаем code из query
     code = code.strip()

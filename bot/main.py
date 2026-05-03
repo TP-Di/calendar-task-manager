@@ -124,15 +124,86 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
     logger.info("Бэкап БД запланирован на 03:00 UTC ежедневно")
 
 
-async def _start_health_server(port: int) -> web.AppRunner:
-    """Запускает aiohttp health check сервер для DigitalOcean."""
+async def _start_health_server(port: int, bot: Bot) -> web.AppRunner:
+    """Запускает aiohttp health check + OAuth callback сервер."""
     async def handle(_request: web.Request) -> web.Response:
-        # Не раскрываем версию: probe нужен только для health check
         return web.Response(text="OK")
+
+    async def oauth_callback(request: web.Request) -> web.Response:
+        """
+        Принимает редирект от Google после consent.
+        ?code=... + ?state=user_id:csrf → находим юзера, завершаем flow,
+        опционально шлём подтверждение в Telegram.
+        """
+        from app.services import calendar as cal
+
+        code = request.query.get("code", "")
+        state = request.query.get("state", "")
+        err = request.query.get("error", "")
+
+        if err:
+            return web.Response(
+                text=f"<h2>❌ Ошибка авторизации</h2><p>{err}</p>",
+                content_type="text/html",
+                status=400,
+            )
+        if not code or not state:
+            return web.Response(
+                text="<h2>❌ Отсутствует code или state</h2>",
+                content_type="text/html",
+                status=400,
+            )
+
+        user_id = cal.find_user_by_state(state)
+        if user_id is None:
+            return web.Response(
+                text=(
+                    "<h2>❌ Сессия не найдена</h2>"
+                    "<p>State не совпадает с активной auth-сессией. "
+                    "Запусти /reauth заново в боте.</p>"
+                ),
+                content_type="text/html",
+                status=400,
+            )
+
+        try:
+            await asyncio.to_thread(cal.complete_auth, code, user_id)
+        except Exception as e:
+            logger.error("OAuth callback: complete_auth failed: %s", e, exc_info=True)
+            return web.Response(
+                text=(
+                    "<h2>❌ Не удалось завершить авторизацию</h2>"
+                    f"<pre>{e}</pre>"
+                    "<p>Попробуй /reauth в боте заново.</p>"
+                ),
+                content_type="text/html",
+                status=500,
+            )
+
+        # Подтверждение в Telegram
+        try:
+            await bot.send_message(
+                user_id,
+                "✅ Авторизация Google Calendar успешна! Можешь продолжать.",
+            )
+        except Exception as e:
+            logger.warning("Не удалось отправить confirm в Telegram: %s", e)
+
+        return web.Response(
+            text=(
+                "<!doctype html><html><head><meta charset='utf-8'>"
+                "<title>Готово</title></head><body style='font-family:sans-serif;padding:40px;text-align:center'>"
+                "<h1>✅ Авторизация выполнена</h1>"
+                "<p>Окно можно закрыть и вернуться в Telegram.</p>"
+                "</body></html>"
+            ),
+            content_type="text/html",
+        )
 
     app = web.Application()
     app.router.add_get("/", handle)
     app.router.add_get("/health", handle)
+    app.router.add_get("/oauth/callback", oauth_callback)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", port).start()
@@ -230,9 +301,9 @@ async def main() -> None:
     set_scheduler(scheduler)  # делает scheduler доступным для settings.py
     logger.info("APScheduler запущен")
 
-    # Health check сервер для DigitalOcean (порт 8080)
+    # Health check + OAuth callback сервер (порт 8080 на DO)
     health_port = int(os.environ.get("PORT", 8080))
-    health_runner = await _start_health_server(health_port)
+    health_runner = await _start_health_server(health_port, bot)
     logger.info("Health check server запущен на порту %d", health_port)
 
     # Запускаем polling
