@@ -14,6 +14,47 @@ from typing import Iterable
 CATEGORY_RE = re.compile(r"\[CATEGORY:([^\]]+)\]", re.IGNORECASE)
 TAG_STRIP_RE = re.compile(r"\[(HARD|SOFT|PRIORITY:[^\]]+|DEPENDS:[^\]]+|CATEGORY:[^\]]+)\]", re.IGNORECASE)
 
+# Эвристики для legacy-событий без [CATEGORY:x]: смотрим title+description.
+# Порядок проверки = приоритет (учёба > работа > дорога > личное).
+_HEURISTICS: list[tuple[str, "re.Pattern[str]"]] = [
+    ("учёба", re.compile(
+        r"\b(?:экзамен|зачет|зачёт|лекция|лекции|семинар|практика|лаборатор|пара|"
+        r"коллоквиум|курсовая|диплом|занятие|урок|расписание|институт|вуз|"
+        r"university|class|lecture|seminar|lab|exam|quiz|tutorial|"
+        r"sgu|hse|mipt|spbu|msu|итмо|вшэ|мфти|мгу|нму|сколтех|skoltech)\b"
+        r"|\b[A-Z]{1,4}\s?[A-Z]?\d{2,4}\b"  # Auditorium / course codes: B101, MA B101
+        r"|\b(?:CD|MA|IoT|EE|CS|DSP|ML|AI|ENG|PHYS|MATH|CHEM|BIO|HIST)\b",
+        re.IGNORECASE,
+    )),
+    ("работа", re.compile(
+        r"\b(?:работа|работаю|sync|синк|standup|стендап|"
+        r"митинг|meeting|zoom|зум|call|созвон|клиент|client|"
+        r"проект|project|sprint|спринт|deadline|review|ревью|"
+        r"daily|retro|ретро|план(?:инг|ировани)|интервью|interview|"
+        r"asterium|deal|демо|demo|presentation|презентаци|"
+        r"командир|тимлид|team\s?lead|all\s?hands)\b",
+        re.IGNORECASE,
+    )),
+    ("дорога", re.compile(
+        r"\b(?:дорога|путь|транспорт|метро|такси|авто|поезд|"
+        r"travel|commute|drive|road|trip|flight|самолёт|самолет|"
+        r"вокзал|аэропорт|airport|station|до\s+дома|до\s+работы)\b",
+        re.IGNORECASE,
+    )),
+    ("личное", re.compile(
+        r"\b(?:друзья|друг|подруг|семья|родители|мама|папа|family|parents|"
+        r"обед|ужин|завтрак|lunch|dinner|breakfast|кофе|coffee|"
+        r"спорт|gym|зал|тренировк|workout|run|пробежк|йога|yoga|"
+        r"врач|doctor|стоматолог|массаж|salon|стрижк|"
+        r"кино|cinema|movie|концерт|concert|театр|theatre|"
+        r"свидание|date|романтик|"
+        r"шоппинг|shopping|магазин|"
+        r"отпуск|vacation|holiday|праздник|"
+        r"birthday|др|день\s*рожд)\b",
+        re.IGNORECASE,
+    )),
+]
+
 # Порядок важен для legend / pie chart
 KNOWN_CATEGORIES = ("учёба", "работа", "дорога", "личное")
 UNKNOWN_CATEGORY = "unknown"
@@ -50,12 +91,21 @@ def _norm_category(raw: str) -> str:
 def event_category(event: dict) -> str:
     """Возвращает одну из KNOWN_CATEGORIES или UNKNOWN_CATEGORY.
 
-    Источник: тег `[CATEGORY:x]` в description (приоритет) или title."""
+    Приоритет:
+    1. Тег `[CATEGORY:x]` в description / title (явная разметка от агента).
+    2. Эвристики по словам/паттернам в title+description (legacy события).
+    """
     for field in ("description", "title"):
         text = event.get(field) or ""
         m = CATEGORY_RE.search(text)
         if m:
             return _norm_category(m.group(1))
+
+    # Fallback: ищем по содержанию title + description
+    haystack = f"{event.get('title', '')} {event.get('description', '')}"
+    for cat_name, pattern in _HEURISTICS:
+        if pattern.search(haystack):
+            return cat_name
     return UNKNOWN_CATEGORY
 
 
