@@ -24,13 +24,31 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+def _looks_like_auth_error(e: Exception) -> bool:
+    """Эвристика: похоже ли исключение на проблему с Google OAuth."""
+    if isinstance(e, TokenExpiredError):
+        return True
+    s = str(e).lower()
+    return any(marker in s for marker in (
+        "invalid_grant", "invalid grant",
+        "token has been expired", "token expired",
+        "refreshtoken", "refresh_token",
+        "unauthorized", "401",
+        "forbidden", "403",
+        "google_credentials_json не задан",
+    ))
+
+
 async def _handle_error(message: Message, e: Exception) -> None:
-    """Обрабатывает ошибку: если это истёкший токен — шлёт ссылку реавторизации, иначе — безопасное сообщение."""
-    if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+    """Обрабатывает ошибку: auth-проблемы → reauth flow, иначе — общее сообщение с хинтом /reauth."""
+    if _looks_like_auth_error(e):
         await send_token_expired(message)
-    else:
-        logger.error("Команда вернула ошибку: %s", e, exc_info=True)
-        await message.answer("❌ Произошла ошибка. Попробуй ещё раз.")
+        return
+    logger.error("Команда вернула ошибку: %s", e, exc_info=True)
+    await message.answer(
+        "❌ Произошла ошибка. Попробуй ещё раз.\n"
+        "Если повторяется — /reauth (переподключить Google) или /clear (сбросить историю)."
+    )
 
 
 async def send_token_expired(message: Message) -> None:
@@ -52,7 +70,19 @@ async def send_token_expired(message: Message) -> None:
         await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
     except Exception as e:
         logger.error("Ошибка генерации auth URL: %s", e)
-        await message.answer("❌ Google токен истёк. Переменная GOOGLE_CREDENTIALS_JSON не задана или недействительна.")
+        await message.answer(
+            "❌ *Google credentials не настроены*\n\n"
+            "Нет переменной окружения `GOOGLE_CREDENTIALS_JSON`. "
+            "Без неё `/reauth` не сработает — Google OAuth не знает откуда брать `client_id`.\n\n"
+            "*Что делать:*\n"
+            "1\\. Создай OAuth client \\(Desktop\\) в Google Cloud Console и скачай `credentials.json`\\.\n"
+            "2\\. Локально: `python bot/scripts/env_from_json.py` — он откроет браузер, "
+            "сделает auth и выведет готовые `GOOGLE_CREDENTIALS_JSON=` и `GOOGLE_TOKEN_JSON=`\\.\n"
+            "3\\. Скопируй обе строки в DigitalOcean → Settings → Environment Variables \\(Encrypted\\)\\.\n"
+            "4\\. Передеплой бота — `/reauth` больше не понадобится\\.",
+            parse_mode="MarkdownV2",
+            disable_web_page_preview=True,
+        )
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[

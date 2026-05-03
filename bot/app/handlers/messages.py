@@ -714,10 +714,14 @@ async def handle_confirmation(callback: CallbackQuery) -> None:
             await callback.message.answer(result, parse_mode=None)
     except Exception as e:
         logger.error("Ошибка выполнения подтверждённого действия: %s", e)
-        if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+        from app.handlers.commands import _looks_like_auth_error
+        if _looks_like_auth_error(e):
             await send_token_expired(callback.message)
         else:
-            await callback.message.answer(f"❌ Ошибка при выполнении: {e}")
+            await callback.message.answer(
+                f"❌ Ошибка при выполнении: {e}\n"
+                "Если проблема с Google — /reauth."
+            )
 
 
 # ─── Snooze callback ───────────────────────────────────────────────────────────
@@ -803,11 +807,13 @@ async def handle_text_message(message: Message) -> None:
     except Exception as e:
         logger.error("Ошибка агента для user_id=%s: %s", user_id, e)
         await thinking_msg.delete()
-        if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
+        from app.handlers.commands import _looks_like_auth_error
+        if _looks_like_auth_error(e):
             await send_token_expired(message)
         else:
             await message.answer(
-                f"❌ Произошла ошибка при обработке запроса: {e}\n\nПопробуй ещё раз или /clear для сброса истории."
+                f"❌ Ошибка при обработке запроса: {e}\n\n"
+                "Попробуй: /reauth (если проблема с Google), /clear (сбросить историю)."
             )
         return
 
