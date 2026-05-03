@@ -247,26 +247,49 @@ def _get_credentials() -> "Credentials":
 
 # ---------- Повторная авторизация через Telegram ----------
 
-# Per-user flows to prevent race conditions when multiple users reauth simultaneously
-_pending_auth_flows: dict[int, InstalledAppFlow] = {}
+# Per-user flow + URL pairs. URL стабилен между повторными вызовами /reauth,
+# чтобы не было state mismatch если пользователь дважды нажал кнопку.
+# Запись чистится через _AUTH_FLOW_TTL секунд.
+_AUTH_FLOW_TTL = 900.0  # 15 мин
+_pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, float]] = {}
 
 
 def get_auth_url(user_id: int) -> str:
     """
     Генерирует OAuth URL для повторной авторизации конкретного пользователя.
-    Сохраняет flow в _pending_auth_flows[user_id] для последующего обмена кода на токен.
+
+    Идемпотентен: повторные вызовы в пределах _AUTH_FLOW_TTL возвращают тот же URL
+    (тот же state) — иначе пользователь, нажавший /reauth дважды, мог получить
+    state mismatch на /auth_code от первой ссылки.
 
     Использует http://localhost как redirect_uri — Google прекратил поддержку
     OOB-flow (urn:ietf:wg:oauth:2.0:oob) в октябре 2022. После consent браузер
     перенаправит на localhost (страница не откроется, но URL содержит ?code=...).
     """
+    import time as _time
+    now = _time.monotonic()
+
+    # Если есть активный (не просроченный) flow — возвращаем его URL
+    entry = _pending_auth_flows.get(user_id)
+    if entry is not None:
+        flow, url, started = entry
+        if now - started < _AUTH_FLOW_TTL:
+            return url
+        # Просрочен — пересоздаём
+        _pending_auth_flows.pop(user_id, None)
+
     client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
     flow = InstalledAppFlow.from_client_config(
         client_config, SCOPES, redirect_uri="http://localhost"
     )
     auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
-    _pending_auth_flows[user_id] = flow
+    _pending_auth_flows[user_id] = (flow, auth_url, now)
     return auth_url
+
+
+def cancel_auth(user_id: int) -> bool:
+    """Отменяет ожидающий OAuth flow. Возвращает True если был активный."""
+    return _pending_auth_flows.pop(user_id, None) is not None
 
 
 def complete_auth(code: str, user_id: int) -> None:
@@ -277,9 +300,13 @@ def complete_auth(code: str, user_id: int) -> None:
     Сохраняет новый токен в файл и обновляет in-memory кэш.
     """
     global _credentials_cache
-    flow = _pending_auth_flows.pop(user_id, None)
-    if flow is None:
-        raise RuntimeError("Нет активного flow. Сначала вызови get_auth_url().")
+    entry = _pending_auth_flows.pop(user_id, None)
+    if entry is None:
+        raise RuntimeError(
+            "Нет активного auth-сеанса. Сначала вызови /reauth, "
+            "перейди по ссылке и потом пришли URL обратно."
+        )
+    flow, _url, _started = entry
 
     # Если пользователь вставил полный URL — извлекаем code из query
     code = code.strip()
