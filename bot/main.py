@@ -19,6 +19,7 @@ from app.handlers import commands, documents, messages, settings as settings_han
 from app.middleware.whitelist import WhitelistMiddleware
 from app.services.briefing import send_briefing, send_weekly_retro
 from app.services.reminders import check_and_send_reminders, sync_completed_tasks
+from app.services.scheduler_ref import set_scheduler
 
 # Настройка логирования
 logging.basicConfig(
@@ -174,10 +175,21 @@ async def main() -> None:
     # Настраиваем команды бота
     await setup_bot_commands(bot)
 
-    # Запускаем планировщик
-    scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
+    # Запускаем планировщик с защитой от дрейфа: coalesce склеивает пропущенные
+    # запуски, max_instances=1 предотвращает параллельное выполнение одного и
+    # того же job (например long-running брифинг), misfire_grace_time даёт
+    # 60-секундный slack на случай краткого блока event loop.
+    scheduler = AsyncIOScheduler(
+        timezone=config.TIMEZONE,
+        job_defaults={
+            "coalesce": True,
+            "max_instances": 1,
+            "misfire_grace_time": 60,
+        },
+    )
     setup_scheduler(scheduler, bot)
     scheduler.start()
+    set_scheduler(scheduler)  # делает scheduler доступным для settings.py
     logger.info("APScheduler запущен")
 
     # Health check сервер для DigitalOcean (порт 8080)

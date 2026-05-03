@@ -6,6 +6,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+# Runtime overrides (API keys set via /settings) are saved here and survive Docker rebuilds
+# because data/ is a Docker volume. Values here take precedence over the baked-in .env.
+load_dotenv("data/runtime.env", override=True)
 
 
 class Config:

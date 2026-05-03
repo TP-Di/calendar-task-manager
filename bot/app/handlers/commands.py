@@ -22,17 +22,19 @@ router = Router()
 
 
 async def _handle_error(message: Message, e: Exception) -> None:
-    """Обрабатывает ошибку: если это истёкший токен — шлёт ссылку реавторизации, иначе — текст ошибки."""
+    """Обрабатывает ошибку: если это истёкший токен — шлёт ссылку реавторизации, иначе — безопасное сообщение."""
     if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
         await send_token_expired(message)
     else:
-        await message.answer(f"❌ Ошибка: {e}")
+        logger.error("Команда вернула ошибку: %s", e, exc_info=True)
+        await message.answer("❌ Произошла ошибка. Попробуй ещё раз.")
 
 
 async def send_token_expired(message: Message) -> None:
     """Отправляет сообщение с ссылкой для повторной авторизации Google."""
     try:
-        auth_url = cal.get_auth_url()
+        user_id = message.from_user.id if message.from_user else 0
+        auth_url = cal.get_auth_url(user_id)
         text = (
             "🔑 *Google токен истёк или был отозван*\n\n"
             "Для повторной авторизации:\n"
@@ -579,12 +581,13 @@ async def cmd_auth_code(message: Message) -> None:
         await message.answer("Использование: `/auth_code КОД`", parse_mode="Markdown")
         return
     code = parts[1].strip()
+    user_id = message.from_user.id
     try:
-        cal.complete_auth(code)
+        cal.complete_auth(code, user_id)
         await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
     except Exception as e:
         logger.error("Ошибка при обмене кода авторизации: %s", e)
-        await message.answer(f"❌ Ошибка авторизации: `{e}`\nПроверь код и попробуй снова через /reauth", parse_mode="Markdown")
+        await message.answer("❌ Ошибка авторизации. Проверь код и попробуй снова через /reauth", parse_mode="Markdown")
 
 
 @router.message(Command("heatmap"))
