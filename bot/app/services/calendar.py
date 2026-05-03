@@ -122,43 +122,52 @@ def _save_token(creds: "Credentials") -> None:
 
 def _update_env_file(key: str, value: str) -> None:
     """
-    Сохраняет ключ в data/runtime.env (персистентный том Docker).
+    Сохраняет ключ в персистентные .env-файлы:
+    1. data/runtime.env (Docker volume — основное хранилище)
+    2. .env (если writable — переживает rebuild без volume)
+
     Атомарно: пишем во временный файл, потом os.replace.
     Thread-safe: серилизуем через _env_lock.
     """
-    runtime_env = os.path.join("data", "runtime.env")
-    try:
-        os.makedirs("data", exist_ok=True)
+    targets = [os.path.join("data", "runtime.env")]
+    # .env в корне (опционально) — если writable, дублируем для переживания rebuild
+    if os.path.exists(".env") and os.access(".env", os.W_OK):
+        targets.append(".env")
 
-        with _env_lock:
-            lines: list[str] = []
-            if os.path.exists(runtime_env):
-                with open(runtime_env, "r", encoding="utf-8") as f:
-                    lines = f.readlines()
+    # Sanitize: strip newlines, escape backslashes then double-quotes
+    safe = value.replace("\n", "").replace("\r", "")
+    safe = safe.replace("\\", "\\\\").replace('"', '\\"')
+    new_line = f'{key}="{safe}"\n'
 
-            # Sanitize: strip newlines, escape backslashes then double-quotes
-            safe = value.replace("\n", "").replace("\r", "")
-            safe = safe.replace("\\", "\\\\").replace('"', '\\"')
-            new_line = f'{key}="{safe}"\n'
+    with _env_lock:
+        for target in targets:
+            try:
+                target_dir = os.path.dirname(target)
+                if target_dir:
+                    os.makedirs(target_dir, exist_ok=True)
 
-            replaced = False
-            for i, line in enumerate(lines):
-                if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
-                    lines[i] = new_line
-                    replaced = True
-                    break
+                lines: list[str] = []
+                if os.path.exists(target):
+                    with open(target, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
 
-            if not replaced:
-                lines.append(new_line)
+                replaced = False
+                for i, line in enumerate(lines):
+                    if line.startswith(f"{key}=") or line.startswith(f"{key} ="):
+                        lines[i] = new_line
+                        replaced = True
+                        break
+                if not replaced:
+                    lines.append(new_line)
 
-            tmp_path = runtime_env + ".tmp"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                f.writelines(lines)
-            os.replace(tmp_path, runtime_env)
+                tmp_path = target + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    f.writelines(lines)
+                os.replace(tmp_path, target)
 
-        logger.info("Обновлён %s в %s", key, runtime_env)
-    except Exception as e:
-        logger.error("Ошибка обновления runtime.env: %s", e)
+                logger.info("Обновлён %s в %s", key, target)
+            except Exception as e:
+                logger.error("Ошибка обновления %s: %s", target, e)
 
 
 def _get_credentials() -> "Credentials":

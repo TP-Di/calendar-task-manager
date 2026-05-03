@@ -35,17 +35,12 @@ logger = logging.getLogger(__name__)
 
 
 async def setup_bot_commands(bot: Bot) -> None:
-    """Регистрирует команды в меню Telegram (порядок = порядок в меню)."""
+    """Регистрирует команды в меню Telegram (только то, что нельзя через кнопки/агента)."""
     commands_list = [
-        BotCommand(command="status",   description="📊 Сейчас + сегодня/завтра + горящие задачи"),
-        BotCommand(command="heatmap",  description="📅 График недели с категориями"),
-        BotCommand(command="load",     description="📂 Текстовая сводка нагрузки за неделю"),
-        BotCommand(command="done",     description="✅ Отметить задачу выполненной"),
-        BotCommand(command="postpone", description="⏰ Отложить задачу"),
-        BotCommand(command="upload",   description="📎 Загрузить PDF с расписанием"),
-        BotCommand(command="settings", description="⚙️ Настройки (LLM, ключи, визуализация)"),
-        BotCommand(command="reauth",   description="🔑 Переавторизация Google Calendar"),
-        BotCommand(command="clear",    description="🗑 Сбросить историю диалога"),
+        BotCommand(command="upload",   description="📎 Загрузить PDF"),
+        BotCommand(command="settings", description="⚙️ Настройки"),
+        BotCommand(command="reauth",   description="🔑 Переавторизация Google"),
+        BotCommand(command="clear",    description="🗑 Сбросить историю"),
         BotCommand(command="help",     description="📖 Справка"),
     ]
     await bot.set_my_commands(commands_list)
