@@ -22,6 +22,28 @@ from app.services.calendar import _update_env_file
 logger = logging.getLogger(__name__)
 router = Router()
 
+
+# Все колбэки/текст-инпуты settings доступны только владельцу.
+# Whitelist пускает группу пользователей в бот, но изменять API ключи /
+# credentials может только OWNER_ID.
+@router.callback_query.outer_middleware()
+async def _owner_only_cb(handler, event, data):
+    if not event.from_user or event.from_user.id != config.OWNER_ID:
+        try:
+            await event.answer("⛔ Только владелец", show_alert=True)
+        except Exception:
+            pass
+        return
+    return await handler(event, data)
+
+
+@router.message.outer_middleware()
+async def _owner_only_msg(handler, event, data):
+    if not event.from_user or event.from_user.id != config.OWNER_ID:
+        # Сообщение пройдёт дальше в messages router если фильтр lambda не сработает
+        return
+    return await handler(event, data)
+
 # user_id → (имя поля, started_at) — TTL 5 мин (H4)
 _SETTINGS_SESSION_TTL = 300.0  # seconds
 _settings_sessions: dict[int, tuple[str, float]] = {}

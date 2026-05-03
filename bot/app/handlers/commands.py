@@ -872,22 +872,35 @@ async def cmd_clear(message: Message) -> None:
     )
 
 
+def _is_owner(message: Message) -> bool:
+    return bool(message.from_user) and message.from_user.id == config.OWNER_ID
+
+
 @router.message(Command("settings"))
 async def cmd_settings(message: Message) -> None:
-    """Открывает интерактивное меню настроек."""
+    """Открывает интерактивное меню настроек (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     from app.handlers.settings import send_settings_menu
     await send_settings_menu(message)
 
 
 @router.message(Command("reauth"))
 async def cmd_reauth(message: Message) -> None:
-    """Генерирует ссылку для повторной авторизации Google."""
+    """Генерирует ссылку для повторной авторизации Google (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     await send_token_expired(message)
 
 
 @router.message(Command("auth_code"))
 async def cmd_auth_code(message: Message) -> None:
-    """Принимает код авторизации Google и сохраняет токен."""
+    """Принимает код авторизации Google и сохраняет токен (только для OWNER_ID)."""
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await message.answer("Использование: `/auth_code КОД`", parse_mode="Markdown")

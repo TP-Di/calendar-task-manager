@@ -21,6 +21,14 @@ class Config:
         for x in os.getenv("ALLOWED_IDS", "").split(",")
         if x.strip().isdigit()
     ]
+    # OWNER_ID — единственный пользователь, кому разрешено /settings и /reauth.
+    # По умолчанию — первый user из ALLOWED_IDS, можно переопределить через env.
+    OWNER_ID: int = (
+        int(os.getenv("OWNER_ID")) if os.getenv("OWNER_ID", "").strip().isdigit()
+        else (int(os.getenv("ALLOWED_IDS", "0").split(",")[0])
+              if os.getenv("ALLOWED_IDS", "").split(",")[0].strip().isdigit()
+              else 0)
+    )
 
     # LLM провайдер: "groq" или "google"
     LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq")

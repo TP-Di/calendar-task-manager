@@ -7,7 +7,29 @@ emit() выполняется в отдельном потоке чтобы не
 import concurrent.futures
 import logging
 import os
+import re
 import sqlite3
+
+
+# Паттерны секретов для редактирования перед записью в БД
+_REDACT_PATTERNS = [
+    re.compile(r"ya29\.[A-Za-z0-9_\-]{20,}"),                      # Google access token
+    re.compile(r"1//[A-Za-z0-9_\-]{20,}"),                          # Google refresh token
+    re.compile(r"eyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"),  # JWT
+    re.compile(r'"refresh_token"\s*:\s*"[^"]+"'),                  # JSON refresh_token
+    re.compile(r'"access_token"\s*:\s*"[^"]+"'),                   # JSON access_token
+    re.compile(r'"client_secret"\s*:\s*"[^"]+"'),                  # OAuth client secret
+    re.compile(r"gsk_[A-Za-z0-9]{20,}"),                            # Groq API keys (gsk_*)
+    re.compile(r"AIza[A-Za-z0-9_\-]{30,}"),                         # Google API key (AIza*)
+]
+
+
+def _redact(text: str) -> str:
+    if not text:
+        return text
+    for pat in _REDACT_PATTERNS:
+        text = pat.sub("[REDACTED]", text)
+    return text
 
 
 _MAX_ROWS_DEFAULT = 10_000
@@ -53,12 +75,13 @@ class SqliteLogHandler(logging.Handler):
 
     def _do_emit(self, record: logging.LogRecord) -> None:
         try:
-            exc = record.exc_text or None
+            msg = _redact(record.getMessage())
+            exc = _redact(record.exc_text) if record.exc_text else None
             ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO bot_logs(ts, level, logger, message, exc_text) VALUES (?,?,?,?,?)",
-                    (ts, record.levelname, record.name, record.getMessage(), exc),
+                    (ts, record.levelname, record.name, msg, exc),
                 )
                 conn.execute(
                     "DELETE FROM bot_logs WHERE id <= (SELECT MAX(id) - ? FROM bot_logs)",
