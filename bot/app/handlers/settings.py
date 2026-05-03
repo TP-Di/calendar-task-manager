@@ -668,6 +668,16 @@ async def cb_hour(callback: CallbackQuery) -> None:
         return
     current = getattr(config, config_key)
     new_val = (current + (1 if direction == "inc" else -1)) % 24
+
+    # Валидация: WORK_HOUR_START < WORK_HOUR_END (рабочее окно не может быть пустым/инвертированным).
+    # Сон может пересекать полночь — для него инверсия допустима.
+    if config_key == "WORK_HOUR_START" and new_val >= config.WORK_HOUR_END:
+        await callback.answer(f"⛔ Начало работы должно быть раньше {config.WORK_HOUR_END:02d}:00", show_alert=True)
+        return
+    if config_key == "WORK_HOUR_END" and new_val <= config.WORK_HOUR_START:
+        await callback.answer(f"⛔ Конец работы должен быть позже {config.WORK_HOUR_START:02d}:00", show_alert=True)
+        return
+
     await _apply(config_key, new_val)
     await callback.message.edit_text(_hours_text(), reply_markup=_hours_kb(), parse_mode="Markdown")
     await callback.answer(f"{config_key}: {new_val:02d}:00")

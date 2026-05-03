@@ -49,6 +49,8 @@ class SqliteLogHandler(logging.Handler):
         os.makedirs(os.path.dirname(db_path) if os.path.dirname(db_path) else ".", exist_ok=True)
         self._db_path = db_path
         self._max_rows = int(os.getenv("LOG_DB_MAX_ROWS", str(_MAX_ROWS_DEFAULT)))
+        self._writes_since_cleanup = 0
+        self._cleanup_every = 100
         self._ensure_table()
 
     def _conn(self) -> sqlite3.Connection:
@@ -83,9 +85,13 @@ class SqliteLogHandler(logging.Handler):
                     "INSERT INTO bot_logs(ts, level, logger, message, exc_text) VALUES (?,?,?,?,?)",
                     (ts, record.levelname, record.name, msg, exc),
                 )
-                conn.execute(
-                    "DELETE FROM bot_logs WHERE id <= (SELECT MAX(id) - ? FROM bot_logs)",
-                    (self._max_rows,),
-                )
+                # M10: cleanup раз в N записей, не на каждый emit
+                self._writes_since_cleanup += 1
+                if self._writes_since_cleanup >= self._cleanup_every:
+                    conn.execute(
+                        "DELETE FROM bot_logs WHERE id <= (SELECT MAX(id) - ? FROM bot_logs)",
+                        (self._max_rows,),
+                    )
+                    self._writes_since_cleanup = 0
         except Exception:
             self.handleError(record)

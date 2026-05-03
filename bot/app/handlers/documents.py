@@ -5,6 +5,7 @@
 
 import io
 import logging
+import time
 
 from aiogram import F, Router
 from aiogram.filters import Command
@@ -17,15 +18,34 @@ router = Router()
 _MAX_PDF_BYTES = 5_000_000
 _MAX_PDF_PAGES = 50
 
-# Состояния ожидания документа (user_id -> True)
-_waiting_upload: set[int] = set()
+# Состояния ожидания документа (user_id -> created_at, TTL 10 мин)
+_WAITING_TTL = 600.0
+_waiting_upload: dict[int, float] = {}
+
+
+def _is_waiting(uid: int) -> bool:
+    ts = _waiting_upload.get(uid)
+    if ts is None:
+        return False
+    if time.monotonic() - ts > _WAITING_TTL:
+        _waiting_upload.pop(uid, None)
+        return False
+    return True
+
+
+def _set_waiting(uid: int) -> None:
+    _waiting_upload[uid] = time.monotonic()
+
+
+def _clear_waiting(uid: int) -> None:
+    _waiting_upload.pop(uid, None)
 
 
 @router.message(Command("upload"))
 async def cmd_upload(message: Message) -> None:
     """Переводит пользователя в режим ожидания документа."""
     user_id = message.from_user.id
-    _waiting_upload.add(user_id)
+    _set_waiting(user_id)
     await message.answer(
         "📎 Отправь PDF-файл или фото с расписанием/заданием.\n\n"
         "Я извлеку дедлайны и задания и предложу добавить их в календарь."
@@ -43,10 +63,10 @@ async def handle_document(message: Message) -> None:
         doc.file_name and doc.file_name.lower().endswith(".pdf")
     )
 
-    if not is_pdf and user_id not in _waiting_upload:
+    if not is_pdf and not _is_waiting(user_id):
         return
 
-    _waiting_upload.discard(user_id)
+    _clear_waiting(user_id)
 
     # Лимит размера до скачивания
     if doc.file_size and doc.file_size > _MAX_PDF_BYTES:
@@ -87,10 +107,10 @@ async def handle_photo(message: Message) -> None:
     """Обрабатывает загруженное фото."""
     user_id = message.from_user.id
 
-    if user_id not in _waiting_upload:
+    if not _is_waiting(user_id):
         return
 
-    _waiting_upload.discard(user_id)
+    _clear_waiting(user_id)
     await message.answer(
         "📷 Фото получено. К сожалению, точный OCR фото пока не поддерживается.\n"
         "Попробуй загрузить PDF-версию документа.\n\n"

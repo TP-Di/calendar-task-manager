@@ -32,14 +32,66 @@ from app.services import reschedule as reschedule_svc
 logger = logging.getLogger(__name__)
 router = Router()
 
+# TTL для in-memory сессий: бросаемые pending'и автоматически чистятся через 30 мин.
+_SESSION_TTL = 1800.0
+
+
+class _TTLDict(dict):
+    """Прозрачная dict-подобная структура с TTL на каждом элементе.
+    Drop-in замена обычного dict — поддерживает [], get, pop, in.
+    """
+
+    def __init__(self, ttl: float = _SESSION_TTL):
+        super().__init__()
+        self._ttl = ttl
+        self._stamps: dict = {}
+
+    def _expired(self, k) -> bool:
+        ts = self._stamps.get(k)
+        if ts is None:
+            return False
+        return time.monotonic() - ts > self._ttl
+
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v)
+        self._stamps[k] = time.monotonic()
+
+    def __getitem__(self, k):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            raise KeyError(k)
+        return super().__getitem__(k)
+
+    def get(self, k, default=None):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            return default
+        return super().get(k, default)
+
+    def pop(self, k, *args):
+        expired = self._expired(k)
+        self._stamps.pop(k, None)
+        if expired:
+            super().pop(k, None)
+            return args[0] if args else None
+        return super().pop(k, *args)
+
+    def __contains__(self, k):
+        if self._expired(k):
+            super().pop(k, None)
+            self._stamps.pop(k, None)
+            return False
+        return super().__contains__(k)
+
+
 # Хранилище ожидающих подтверждения tool calls: user_id -> pending_data
-_pending_confirmations: dict[int, dict] = {}
-
+_pending_confirmations: _TTLDict = _TTLDict()
 # message_id диалога подтверждения: user_id -> (chat_id, message_id)
-_pending_confirm_msgs: dict[int, tuple[int, int]] = {}
-
+_pending_confirm_msgs: _TTLDict = _TTLDict()
 # Хранилище grid-сессий выбора слота: user_id -> session
-_grid_sessions: dict[int, dict] = {}
+_grid_sessions: _TTLDict = _TTLDict()
 
 # ─── Rate limiting ─────────────────────────────────────────────────────────────
 _RATE_LIMIT = 5        # max messages per user per window

@@ -71,17 +71,29 @@ async def build_briefing_text() -> str:
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     today_end = today_start + timedelta(days=1)
     tomorrow_end = today_start + timedelta(days=2)
+    week_end = today_start + timedelta(days=7)
 
     lines = ["📅 *Утренний брифинг*\n"]
 
-    # --- События сегодня ---
+    # M7: один get_events за всю неделю + локальная фильтрация по дате,
+    # вместо трёх отдельных API-запросов (сегодня/завтра/неделя).
     try:
-        today_events = await cal.get_events(
-            today_start.isoformat(), today_end.isoformat()
-        )
+        week_events = await cal.get_events(today_start.isoformat(), week_end.isoformat())
     except Exception as e:
-        logger.error("Ошибка получения событий (сегодня): %s", e)
-        today_events = []
+        logger.error("Ошибка получения событий (неделя): %s", e)
+        week_events = []
+
+    def _ev_local_dt(ev):
+        s = ev.get("start", "")
+        if "T" not in s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).astimezone(ZoneInfo(config.TIMEZONE))
+        except Exception:
+            return None
+
+    today_events = [e for e in week_events if (d := _ev_local_dt(e)) and today_start <= d < today_end]
+    tomorrow_events = [e for e in week_events if (d := _ev_local_dt(e)) and today_end <= d < tomorrow_end]
 
     lines.append(f"*Сегодня, {now.strftime('%d.%m.%Y')}:*")
     if today_events:
@@ -89,15 +101,6 @@ async def build_briefing_text() -> str:
             lines.append(_format_event_line(ev))
     else:
         lines.append("  Нет событий")
-
-    # --- События завтра ---
-    try:
-        tomorrow_events = await cal.get_events(
-            today_end.isoformat(), tomorrow_end.isoformat()
-        )
-    except Exception as e:
-        logger.error("Ошибка получения событий (завтра): %s", e)
-        tomorrow_events = []
 
     tomorrow_dt = today_start + timedelta(days=1)
     lines.append(f"\n*Завтра, {tomorrow_dt.strftime('%d.%m.%Y')}:*")
@@ -141,22 +144,14 @@ async def build_briefing_text() -> str:
         if len(normal) > 10:
             lines.append(f"  ... и ещё {len(normal) - 10} задач")
 
-    # --- Ближайшие дедлайны (события с ключевыми словами) ---
-    try:
-        week_events = await cal.get_events(
-            today_start.isoformat(),
-            (today_start + timedelta(days=7)).isoformat(),
+    # --- Ближайшие дедлайны (фильтр по уже полученным week_events) ---
+    deadlines = [
+        ev for ev in week_events
+        if any(
+            kw in ev.get("title", "").lower() or kw in ev.get("description", "").lower()
+            for kw in ["дедлайн", "deadline", "экзамен", "exam", "ielts", "сдача"]
         )
-        deadlines = [
-            ev for ev in week_events
-            if any(
-                kw in ev.get("title", "").lower() or kw in ev.get("description", "").lower()
-                for kw in ["дедлайн", "deadline", "экзамен", "exam", "ielts", "сдача"]
-            )
-        ]
-    except Exception as e:
-        logger.error("Ошибка получения дедлайнов: %s", e)
-        deadlines = []
+    ]
 
     if deadlines:
         lines.append("\n*Ближайшие дедлайны и экзамены:*")

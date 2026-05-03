@@ -20,17 +20,27 @@ from app.services.calendar import TokenExpiredError
 logger = logging.getLogger(__name__)
 
 
-def _is_placeholder(value: str) -> bool:
+_PLACEHOLDER_BARE = re.compile(r"^[\$@]?\w*[_-]?id$", re.IGNORECASE)
+
+
+def _is_placeholder(value) -> bool:
     """Возвращает True, если значение выглядит как плейсхолдер, а не реальный ID."""
-    v = (value or "").strip()
+    if value is None:
+        return True
+    v = (str(value) or "").strip()
+    if not v:
+        return True
     # <task_id>, <id>, ...
     if v.startswith("<") and v.endswith(">"):
         return True
-    # ${get_tasks()[0].id}, ${task_id}, ...
+    # ${get_tasks()[0].id}, ${task_id}
     if v.startswith("${") and v.endswith("}"):
         return True
     # {task_id}, {id}
     if v.startswith("{") and v.endswith("}"):
+        return True
+    # bare placeholders: task_id, $event_id, @id, id
+    if _PLACEHOLDER_BARE.match(v):
         return True
     return False
 

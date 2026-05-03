@@ -115,22 +115,34 @@ async def get_user_context(user_id: int) -> dict:
 
 
 async def update_user_context(user_id: int, data: dict) -> None:
-    """Обновляет контекст пользователя (merge с существующим)."""
-    current = await get_user_context(user_id)
-    current.update(data)
+    """Обновляет контекст пользователя (merge с существующим). Атомарно через BEGIN IMMEDIATE."""
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(config.DB_PATH) as db:
-        await db.execute(
-            """
-            INSERT INTO user_context (user_id, context_json, updated_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                context_json = excluded.context_json,
-                updated_at = excluded.updated_at
-            """,
-            (user_id, json.dumps(current, ensure_ascii=False), now),
-        )
-        await db.commit()
+        # Lock writer-side, чтобы read-modify-write не race'ил с другим writer
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT context_json FROM user_context WHERE user_id = ?",
+                (user_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            current = json.loads(row["context_json"]) if row else {}
+            current.update(data)
+            await db.execute(
+                """
+                INSERT INTO user_context (user_id, context_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    context_json = excluded.context_json,
+                    updated_at = excluded.updated_at
+                """,
+                (user_id, json.dumps(current, ensure_ascii=False), now),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
 
 
 # ---------------------------------------------------------------------------
