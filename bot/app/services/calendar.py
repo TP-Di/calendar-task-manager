@@ -250,8 +250,9 @@ def _get_credentials() -> "Credentials":
 # Per-user flow + URL pairs. URL стабилен между повторными вызовами /reauth,
 # чтобы не было state mismatch если пользователь дважды нажал кнопку.
 # Запись чистится через _AUTH_FLOW_TTL секунд.
+# Структура: user_id -> (flow, auth_url, state, started_at)
 _AUTH_FLOW_TTL = 900.0  # 15 мин
-_pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, float]] = {}
+_pending_auth_flows: dict[int, tuple[InstalledAppFlow, str, str, float]] = {}
 
 
 def get_auth_url(user_id: int) -> str:
@@ -269,13 +270,11 @@ def get_auth_url(user_id: int) -> str:
     import time as _time
     now = _time.monotonic()
 
-    # Если есть активный (не просроченный) flow — возвращаем его URL
     entry = _pending_auth_flows.get(user_id)
     if entry is not None:
-        flow, url, started = entry
+        _flow, url, _state, started = entry
         if now - started < _AUTH_FLOW_TTL:
             return url
-        # Просрочен — пересоздаём
         _pending_auth_flows.pop(user_id, None)
 
     client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
@@ -283,7 +282,7 @@ def get_auth_url(user_id: int) -> str:
         client_config, SCOPES, redirect_uri="http://localhost"
     )
     auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
-    _pending_auth_flows[user_id] = (flow, auth_url, now)
+    _pending_auth_flows[user_id] = (flow, auth_url, "", now)
     return auth_url
 
 
@@ -297,16 +296,20 @@ def complete_auth(code: str, user_id: int) -> None:
     Завершает OAuth flow, принимая код авторизации от пользователя.
     Принимает как чистый код, так и полный URL вида http://localhost/?code=XXX&...
 
+    При ошибке flow НЕ удаляется — пользователь может просто переввести
+    /auth_code <код> повторно без нового /reauth (например, открыл ту же
+    ссылку, получил свежий код и прислал его).
+
     Сохраняет новый токен в файл и обновляет in-memory кэш.
     """
     global _credentials_cache
-    entry = _pending_auth_flows.pop(user_id, None)
+    entry = _pending_auth_flows.get(user_id)
     if entry is None:
         raise RuntimeError(
             "Нет активного auth-сеанса. Сначала вызови /reauth, "
             "перейди по ссылке и потом пришли URL обратно."
         )
-    flow, _url, _started = entry
+    flow, _url, _state, _started = entry
 
     # Если пользователь вставил полный URL — извлекаем code из query
     code = code.strip()
@@ -318,7 +321,11 @@ def complete_auth(code: str, user_id: int) -> None:
             raise RuntimeError("В URL нет параметра ?code=...")
         code = codes[0]
 
+    # fetch_token может бросить — flow в _pending_auth_flows остаётся,
+    # пользователь может попробовать переввести код.
     flow.fetch_token(code=code)
+    # Успех — только теперь удаляем flow
+    _pending_auth_flows.pop(user_id, None)
     creds = flow.credentials
     _save_token(creds)
     _credentials_cache = creds

@@ -12,7 +12,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-from app.config import config
+from app.config import config, log_config_sources
 from app.db.database import backup_db, init_db
 from app.db.log_handler import SqliteLogHandler
 from app.handlers import commands, documents, messages, settings as settings_handler
@@ -127,7 +127,6 @@ def setup_scheduler(scheduler: AsyncIOScheduler, bot: Bot) -> None:
 async def _start_health_server(port: int) -> web.AppRunner:
     """Запускает aiohttp health check сервер для DigitalOcean."""
     async def handle(_request: web.Request) -> web.Response:
-        # Не раскрываем версию: probe нужен только для health check
         return web.Response(text="OK")
 
     app = web.Application()
@@ -142,6 +141,17 @@ async def _start_health_server(port: int) -> web.AppRunner:
 async def main() -> None:
     """Основная функция запуска бота."""
     logger.info("Запуск бота...")
+    log_config_sources()
+
+    # Диагностика persistence для credentials
+    from app.services.calendar import env_persistence_status
+    persist = env_persistence_status()
+    for path, ok in persist.items():
+        logger.info(
+            "Persist target %-25s %s",
+            path,
+            "writable ✓" if ok else "NOT writable ✗ — изменения через /settings не сохранятся!",
+        )
 
     # Проверяем обязательные переменные
     if not config.BOT_TOKEN:
@@ -219,7 +229,7 @@ async def main() -> None:
     set_scheduler(scheduler)  # делает scheduler доступным для settings.py
     logger.info("APScheduler запущен")
 
-    # Health check сервер для DigitalOcean (порт 8080)
+    # Health check + OAuth callback сервер (порт 8080 на DO)
     health_port = int(os.environ.get("PORT", 8080))
     health_runner = await _start_health_server(health_port)
     logger.info("Health check server запущен на порту %d", health_port)

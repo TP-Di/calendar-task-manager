@@ -39,14 +39,15 @@ async def send_token_expired(message: Message) -> None:
         user_id = message.from_user.id if message.from_user else 0
         auth_url = cal.get_auth_url(user_id)
         text = (
-            "🔑 *Google токен истёк или был отозван*\n\n"
+            "🔑 *Google авторизация*\n\n"
             f"1\\. Перейди по [этой ссылке]({auth_url}) и разреши доступ\\. "
             "Поставь галочки на ОБА scope: Calendar и Tasks\\.\n"
             "2\\. Браузер перебросит на `http://localhost/...` — страница НЕ откроется "
             "\\(это нормально\\)\\.\n"
             "3\\. Скопируй ВСЮ ссылку из адресной строки и пришли её боту:\n"
             "`/auth_code <ссылка>`\n\n"
-            "_Если запутался \\— /auth\\_cancel сбросит сеанс, потом заново /reauth\\._"
+            "_Если ошибка — просто введи код заново\\. /auth\\_cancel сбросит "
+            "сеанс, потом /reauth\\._"
         )
         await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
     except Exception as e:

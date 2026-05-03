@@ -2,14 +2,48 @@
 Конфигурация бота — читает переменные из .env
 """
 
+import logging
 import os
 from dotenv import load_dotenv
 
-load_dotenv()
+_log = logging.getLogger(__name__)
+
+# Источники в порядке загрузки. Каждый следующий с override=True перезаписывает.
+_loaded_summary: list[str] = []
+
+
+def _load_with_summary(path: str, override: bool) -> None:
+    """Загружает .env-файл и копит сводку для диагностики на старте."""
+    if not os.path.isfile(path):
+        _loaded_summary.append(f"{path} (не найден)")
+        return
+    keys_before = set(os.environ.keys())
+    load_dotenv(path, override=override)
+    new_keys = sorted(k for k in os.environ.keys() - keys_before)
+    _loaded_summary.append(f"{path} (+{len(new_keys)} новых ключей)")
+
+
+_load_with_summary(".env", override=False)
 # Runtime overrides (API keys set via /settings) сохраняются в .env (если writable)
 # и в data/runtime.env (Docker volume). Оба пути работают: значения переживают
 # rebuild контейнера. data/runtime.env имеет приоритет (более свежие правки).
-load_dotenv("data/runtime.env", override=True)
+_load_with_summary("data/runtime.env", override=True)
+
+
+def log_config_sources() -> None:
+    """Вызывается из main.py чтобы записать в логи откуда загрузились настройки."""
+    _log.info("Источники конфигурации: %s", " · ".join(_loaded_summary))
+    # Перечисляем ключи, которые точно есть (без значений — security)
+    important = [
+        "BOT_TOKEN", "GROQ_API_KEY", "GOOGLE_AI_KEY",
+        "GOOGLE_CREDENTIALS_JSON", "GOOGLE_TOKEN_JSON",
+        "TIMEZONE", "BRIEFING_TIME", "ALLOWED_IDS", "OWNER_ID",
+    ]
+    present = [k for k in important if os.getenv(k)]
+    missing = [k for k in important if not os.getenv(k)]
+    _log.info("Загружены ключи: %s", ", ".join(present) or "(пусто)")
+    if missing:
+        _log.warning("Отсутствуют ключи: %s", ", ".join(missing))
 
 
 class Config:
