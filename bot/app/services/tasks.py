@@ -3,25 +3,19 @@
 Использует тот же OAuth2 токен, что и calendar.py.
 """
 
-import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.config import config
-from app.services.calendar import _get_credentials
+from app.services.calendar import _get_credentials, _google_api_executor, _with_retry
 
 logger = logging.getLogger(__name__)
 
-# ID стандартного списка задач
 _DEFAULT_TASKLIST = "@default"
-
-# Поля, разрешённые в теле update-запроса (остальные — read-only)
 _WRITABLE_FIELDS = {"id", "title", "status", "due", "notes", "completed", "parent", "position"}
 
 
@@ -50,30 +44,33 @@ def _format_task(task: dict) -> dict:
 
 async def get_tasks() -> list[dict]:
     """Получает активные (незавершённые) задачи из Google Tasks."""
+    import asyncio
 
+    @_with_retry()
     def _fetch():
-        try:
-            service = _build_tasks_service()
-            result = (
-                service.tasks()
-                .list(
-                    tasklist=_DEFAULT_TASKLIST,
-                    showCompleted=False,
-                    showHidden=False,
-                    maxResults=100,
-                )
-                .execute()
+        service = _build_tasks_service()
+        result = (
+            service.tasks()
+            .list(
+                tasklist=_DEFAULT_TASKLIST,
+                showCompleted=False,
+                showHidden=False,
+                maxResults=100,
             )
-            items = result.get("items", [])
-            return [
-                _format_task(t) for t in items
-                if t.get("status") == "needsAction"
-            ]
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (get_tasks): %s", e)
-            raise
+            .execute()
+        )
+        items = result.get("items", [])
+        return [
+            _format_task(t) for t in items
+            if t.get("status") == "needsAction"
+        ]
 
-    return await asyncio.to_thread(_fetch)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _fetch)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (get_tasks): %s", e)
+        raise
 
 
 async def create_task(
@@ -81,178 +78,186 @@ async def create_task(
     start_time: str = "", end_time: str = "",
 ) -> dict:
     """Создаёт задачу в Google Tasks. start_time/end_time хранятся в notes."""
+    import asyncio
 
+    @_with_retry()
     def _create():
-        try:
-            service = _build_tasks_service()
-            body: dict[str, Any] = {"title": title}
+        service = _build_tasks_service()
+        body: dict[str, Any] = {"title": title}
 
-            # Собираем notes: сначала блок времени (если есть), затем описание
-            notes_parts = []
-            if start_time:
-                block = f"⏰ {start_time}"
-                if end_time:
-                    block += f" – {end_time}"
-                notes_parts.append(block)
-            if description:
-                notes_parts.append(description)
-            if notes_parts:
-                body["notes"] = "\n".join(notes_parts)
+        notes_parts = []
+        if start_time:
+            block = f"⏰ {start_time}"
+            if end_time:
+                block += f" – {end_time}"
+            notes_parts.append(block)
+        if description:
+            notes_parts.append(description)
+        if notes_parts:
+            body["notes"] = "\n".join(notes_parts)
 
-            if due:
-                body["due"] = due if due.endswith("Z") else due + "Z"
+        if due:
+            body["due"] = due if due.endswith("Z") else due + "Z"
 
-            task = (
-                service.tasks()
-                .insert(tasklist=_DEFAULT_TASKLIST, body=body)
-                .execute()
-            )
-            logger.info("Создана задача: %s (%s)", title, task.get("id"))
-            return _format_task(task)
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (create_task): %s", e)
-            raise
+        task = (
+            service.tasks()
+            .insert(tasklist=_DEFAULT_TASKLIST, body=body)
+            .execute()
+        )
+        logger.info("Создана задача: %s (%s)", title, task.get("id"))
+        return _format_task(task)
 
-    return await asyncio.to_thread(_create)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _create)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (create_task): %s", e)
+        raise
 
 
 async def complete_task(task_id: str) -> dict:
     """Отмечает задачу выполненной."""
+    import asyncio
 
+    @_with_retry()
     def _complete():
-        try:
-            service = _build_tasks_service()
-            task = (
-                service.tasks()
-                .get(tasklist=_DEFAULT_TASKLIST, task=task_id)
-                .execute()
-            )
-            task["status"] = "completed"
-            updated = (
-                service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
-                .execute()
-            )
-            logger.info("Задача выполнена: %s", task_id)
-            return _format_task(updated)
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (complete_task): %s", e)
-            raise
+        service = _build_tasks_service()
+        task = (
+            service.tasks()
+            .get(tasklist=_DEFAULT_TASKLIST, task=task_id)
+            .execute()
+        )
+        task["status"] = "completed"
+        updated = (
+            service.tasks()
+            .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
+            .execute()
+        )
+        logger.info("Задача выполнена: %s", task_id)
+        return _format_task(updated)
 
-    return await asyncio.to_thread(_complete)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _complete)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (complete_task): %s", e)
+        raise
 
 
 async def delete_task(task_id: str) -> dict:
     """Удаляет задачу из Google Tasks."""
+    import asyncio
 
+    @_with_retry()
     def _delete():
-        try:
-            service = _build_tasks_service()
-            service.tasks().delete(tasklist=_DEFAULT_TASKLIST, task=task_id).execute()
-            logger.info("Удалена задача: %s", task_id)
-            return {"status": "deleted", "task_id": task_id}
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (delete_task): %s", e)
-            raise
+        service = _build_tasks_service()
+        service.tasks().delete(tasklist=_DEFAULT_TASKLIST, task=task_id).execute()
+        logger.info("Удалена задача: %s", task_id)
+        return {"status": "deleted", "task_id": task_id}
 
-    return await asyncio.to_thread(_delete)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _delete)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (delete_task): %s", e)
+        raise
 
 
 async def update_task(task_id: str, fields: dict) -> dict:
     """Обновляет поля задачи."""
+    import asyncio
 
+    @_with_retry()
     def _update():
-        try:
-            service = _build_tasks_service()
-            task = (
-                service.tasks()
-                .get(tasklist=_DEFAULT_TASKLIST, task=task_id)
-                .execute()
-            )
-            if "title" in fields:
-                task["title"] = fields["title"]
-            if "due" in fields:
-                due = fields["due"]
-                # Убираем timezone-offset (+00:00, +05:00 и т.п.) перед добавлением Z,
-                # иначе получается невалидный вид "...+00:00Z"
-                if not due.endswith("Z"):
-                    # Отрезаем суффикс вида ±HH:MM если есть
-                    for sign in ("+", "-"):
-                        idx = due.rfind(sign, 10)  # ищем только после YYYY-MM-DD
-                        if idx != -1:
-                            due = due[:idx]
-                            break
-                    due += "Z"
-                task["due"] = due
+        service = _build_tasks_service()
+        task = (
+            service.tasks()
+            .get(tasklist=_DEFAULT_TASKLIST, task=task_id)
+            .execute()
+        )
+        if "title" in fields:
+            task["title"] = fields["title"]
+        if "due" in fields:
+            due = fields["due"]
+            if not due.endswith("Z"):
+                for sign in ("+", "-"):
+                    idx = due.rfind(sign, 10)
+                    if idx != -1:
+                        due = due[:idx]
+                        break
+                due += "Z"
+            task["due"] = due
 
-            # Обновление блока времени и/или описания в notes
-            if "start_time" in fields or "end_time" in fields or "description" in fields:
-                # Парсим текущие notes: первая строка может быть ⏰-блоком
-                current_notes = task.get("notes", "")
-                if current_notes.startswith("⏰ "):
-                    lines = current_notes.split("\n", 1)
-                    old_desc = lines[1] if len(lines) > 1 else ""
-                    # Восстанавливаем start/end из текущего блока
-                    block_part = lines[0][2:].strip()  # убираем "⏰ "
-                    if " – " in block_part:
-                        old_start, old_end = block_part.split(" – ", 1)
-                    else:
-                        old_start, old_end = block_part, ""
+        if "start_time" in fields or "end_time" in fields or "description" in fields:
+            current_notes = task.get("notes", "")
+            if current_notes.startswith("⏰ "):
+                lines = current_notes.split("\n", 1)
+                old_desc = lines[1] if len(lines) > 1 else ""
+                block_part = lines[0][2:].strip()
+                if " – " in block_part:
+                    old_start, old_end = block_part.split(" – ", 1)
                 else:
-                    old_start, old_end, old_desc = "", "", current_notes
+                    old_start, old_end = block_part, ""
+            else:
+                old_start, old_end, old_desc = "", "", current_notes
 
-                new_start = fields.get("start_time", old_start)
-                new_end = fields.get("end_time", old_end)
-                new_desc = fields.get("description", old_desc)
+            new_start = fields.get("start_time", old_start)
+            new_end   = fields.get("end_time",   old_end)
+            new_desc  = fields.get("description", old_desc)
 
-                notes_parts = []
-                if new_start:
-                    block = f"⏰ {new_start}"
-                    if new_end:
-                        block += f" – {new_end}"
-                    notes_parts.append(block)
-                if new_desc:
-                    notes_parts.append(new_desc)
-                task["notes"] = "\n".join(notes_parts)
+            notes_parts = []
+            if new_start:
+                block = f"⏰ {new_start}"
+                if new_end:
+                    block += f" – {new_end}"
+                notes_parts.append(block)
+            if new_desc:
+                notes_parts.append(new_desc)
+            task["notes"] = "\n".join(notes_parts)
 
-            updated = (
-                service.tasks()
-                .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
-                .execute()
-            )
-            logger.info("Обновлена задача: %s", task_id)
-            return _format_task(updated)
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (update_task): %s", e)
-            raise
+        updated = (
+            service.tasks()
+            .update(tasklist=_DEFAULT_TASKLIST, task=task_id, body=_clean_task_body(task))
+            .execute()
+        )
+        logger.info("Обновлена задача: %s", task_id)
+        return _format_task(updated)
 
-    return await asyncio.to_thread(_update)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _update)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (update_task): %s", e)
+        raise
 
 
 async def get_recently_completed_tasks(minutes: int = 20) -> list[dict]:
     """Возвращает задачи, выполненные за последние N минут."""
+    import asyncio
 
+    @_with_retry()
     def _fetch():
-        try:
-            service = _build_tasks_service()
-            completed_min = (
-                datetime.now(timezone.utc) - timedelta(minutes=minutes)
-            ).strftime("%Y-%m-%dT%H:%M:%SZ")
-            result = (
-                service.tasks()
-                .list(
-                    tasklist=_DEFAULT_TASKLIST,
-                    showCompleted=True,
-                    showHidden=True,
-                    completedMin=completed_min,
-                    maxResults=50,
-                )
-                .execute()
+        service = _build_tasks_service()
+        completed_min = (
+            datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        result = (
+            service.tasks()
+            .list(
+                tasklist=_DEFAULT_TASKLIST,
+                showCompleted=True,
+                showHidden=True,
+                completedMin=completed_min,
+                maxResults=50,
             )
-            items = result.get("items", [])
-            return [_format_task(t) for t in items if t.get("status") == "completed"]
-        except HttpError as e:
-            logger.error("Ошибка Tasks API (get_recently_completed_tasks): %s", e)
-            raise
+            .execute()
+        )
+        items = result.get("items", [])
+        return [_format_task(t) for t in items if t.get("status") == "completed"]
 
-    return await asyncio.to_thread(_fetch)
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_google_api_executor, _fetch)
+    except HttpError as e:
+        logger.error("Ошибка Tasks API (get_recently_completed_tasks): %s", e)
+        raise

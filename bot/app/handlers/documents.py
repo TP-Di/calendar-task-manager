@@ -54,8 +54,8 @@ async def handle_document(message: Message) -> None:
         file_bytes = await message.bot.download_file(file.file_path)
         pdf_bytes = file_bytes.read()
     except Exception as e:
-        logger.error("Ошибка загрузки документа: %s", e)
-        await message.answer(f"❌ Ошибка загрузки файла: {e}")
+        logger.error("Ошибка загрузки документа: %s", e, exc_info=True)
+        await message.answer("❌ Не удалось загрузить файл. Попробуй ещё раз.")
         return
 
     # Извлекаем текст из PDF
@@ -139,8 +139,9 @@ async def _analyze_with_agent(
     try:
         response = await run_agent(user_id, prompt)
     except Exception as e:
-        logger.error("Ошибка агента при анализе документа: %s", e)
-        await message.answer(f"❌ Ошибка при анализе документа: {e}")
+        logger.error("Ошибка агента при анализе документа: %s", e, exc_info=True)
+        from app.handlers.commands import _handle_error
+        await _handle_error(message, e)
         return
 
     await handle_agent_response(message, response, user_id)

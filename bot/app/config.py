@@ -6,6 +6,9 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+# Runtime overrides (API keys set via /settings) are saved here and survive Docker rebuilds
+# because data/ is a Docker volume. Values here take precedence over the baked-in .env.
+load_dotenv("data/runtime.env", override=True)
 
 
 class Config:
@@ -57,6 +60,21 @@ class Config:
 
     # Временная зона пользователя (IANA, например "Asia/Almaty", "Europe/Moscow")
     TIMEZONE: str = os.getenv("TIMEZONE", "UTC")
+
+    # ─── Визуализация (Status/Tasks/Today + хитмап) ─────────────────────────
+    # Адаптивный диапазон Y для хитмапа: фактические события → clamped в [MIN, MAX]
+    HEATMAP_HOUR_MIN: int = int(os.getenv("HEATMAP_HOUR_MIN", "6"))
+    HEATMAP_HOUR_MAX: int = int(os.getenv("HEATMAP_HOUR_MAX", "24"))
+    # Минимальный размер свободного окна
+    MIN_FREE_WINDOW_HOURS:       float = float(os.getenv("MIN_FREE_WINDOW_HOURS", "2.0"))
+    MIN_FREE_WINDOW_TODAY_HOURS: float = float(os.getenv("MIN_FREE_WINDOW_TODAY_HOURS", "1.0"))
+    # Пороги срочности задач (дней до дедлайна)
+    URGENT_TASK_DAYS: int = int(os.getenv("URGENT_TASK_DAYS", "1"))
+    WARM_TASK_DAYS:   int = int(os.getenv("WARM_TASK_DAYS",   "7"))
+    # Регекспы рутинных событий, которые схлопываются (через запятую)
+    ROUTINE_PATTERNS: str = os.getenv("ROUTINE_PATTERNS", "Дорога")
+    # Знаменатель для процентовки нагрузки на хитмапе
+    WORK_HOURS_PER_WEEK: int = int(os.getenv("WORK_HOURS_PER_WEEK", "70"))
 
 
 config = Config()

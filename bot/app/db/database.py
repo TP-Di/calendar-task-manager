@@ -17,8 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 async def init_db() -> None:
-    """Создаёт таблицы если их нет."""
+    """Создаёт таблицы если их нет. Включает WAL для concurrent reads."""
     async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA synchronous=NORMAL")
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS dialog_history (

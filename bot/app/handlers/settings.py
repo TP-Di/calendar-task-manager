@@ -63,6 +63,13 @@ _TIMEZONES = [
 _BRIEFING_TIMES = ["06:00", "07:00", "08:00", "09:00", "10:00"]
 _REMINDER_HOURS = [1, 2, 3, 6, 12]
 
+# ─── Visualization presets ────────────────────────────────────────────────────
+_FREE_WINDOW_TODAY = [0.5, 1.0, 1.5, 2.0]
+_FREE_WINDOW_HEATMAP = [1.0, 2.0, 3.0, 4.0]
+_URGENT_DAYS = [1, 2, 3]
+_WARM_DAYS = [5, 7, 10, 14]
+_WORK_HOURS_WEEK = [40, 50, 60, 70, 80]
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
@@ -111,6 +118,9 @@ def _main_kb() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(text="🌍 Временная зона", callback_data="settings:tz"),
             InlineKeyboardButton(text="📊 Уровень лога",   callback_data="settings:log"),
+        ],
+        [
+            InlineKeyboardButton(text="🎨 Визуализация",   callback_data="settings:viz"),
         ],
     ])
 
@@ -245,6 +255,53 @@ def _log_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def _viz_kb() -> InlineKeyboardMarkup:
+    rows = []
+    rows.append([InlineKeyboardButton(text="🟢 Свободное окно (Сегодня):", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{_check(abs(config.MIN_FREE_WINDOW_TODAY_HOURS - h) < 0.01)}{h:g}ч",
+            callback_data=f"settings:viz_today:{h}",
+        )
+        for h in _FREE_WINDOW_TODAY
+    ])
+    rows.append([InlineKeyboardButton(text="📅 Свободное окно (хитмап):", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{_check(abs(config.MIN_FREE_WINDOW_HOURS - h) < 0.01)}{h:g}ч",
+            callback_data=f"settings:viz_heatmap:{h}",
+        )
+        for h in _FREE_WINDOW_HEATMAP
+    ])
+    rows.append([InlineKeyboardButton(text="🔴 Срочно (≤Nд):", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{_check(config.URGENT_TASK_DAYS == n)}{n}д",
+            callback_data=f"settings:viz_urgent:{n}",
+        )
+        for n in _URGENT_DAYS
+    ])
+    rows.append([InlineKeyboardButton(text="🟡 Тёплая задача (≤Nд):", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{_check(config.WARM_TASK_DAYS == n)}{n}д",
+            callback_data=f"settings:viz_warm:{n}",
+        )
+        for n in _WARM_DAYS
+    ])
+    rows.append([InlineKeyboardButton(text="📊 Активных часов в неделю:", callback_data="noop")])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{_check(config.WORK_HOURS_PER_WEEK == n)}{n}ч",
+            callback_data=f"settings:viz_workhrs:{n}",
+        )
+        for n in _WORK_HOURS_WEEK
+    ])
+    rows.append([InlineKeyboardButton(text="✏️ Изменить рутинные паттерны", callback_data="settings:viz_routine_edit")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="settings:home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Text builders
 # ──────────────────────────────────────────────────────────────────────────────
@@ -322,6 +379,18 @@ def _log_text() -> str:
     return f"📊 *Уровень логирования*\n\nТекущий: `{config.LOG_LEVEL}`"
 
 
+def _viz_text() -> str:
+    routine = config.ROUTINE_PATTERNS or "(пусто)"
+    return (
+        "🎨 *Визуализация*\n\n"
+        f"*Свободное окно — Сегодня:* `≥ {config.MIN_FREE_WINDOW_TODAY_HOURS:g}ч`\n"
+        f"*Свободное окно — хитмап:* `≥ {config.MIN_FREE_WINDOW_HOURS:g}ч`\n"
+        f"*🔴 Срочно:* `≤ {config.URGENT_TASK_DAYS}д`  ·  *🟡 Тёплая:* `≤ {config.WARM_TASK_DAYS}д`\n"
+        f"*Часов в неделю:* `{config.WORK_HOURS_PER_WEEK}ч` (для % загрузки)\n"
+        f"*Рутина (regex CSV):* `{routine}`"
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Public entry point
 # ──────────────────────────────────────────────────────────────────────────────
@@ -387,8 +456,63 @@ async def cb_log(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.callback_query(F.data == "settings:viz")
+async def cb_viz(callback: CallbackQuery) -> None:
+    await callback.message.edit_text(_viz_text(), reply_markup=_viz_kb(), parse_mode="Markdown")
+    await callback.answer()
+
+
 @router.callback_query(F.data == "noop")
 async def cb_noop(callback: CallbackQuery) -> None:
+    await callback.answer()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Callback: visualization sub-options
+# ──────────────────────────────────────────────────────────────────────────────
+
+_VIZ_FIELDS = {
+    "viz_today":   ("MIN_FREE_WINDOW_TODAY_HOURS", float, "Свободное окно (Сегодня)"),
+    "viz_heatmap": ("MIN_FREE_WINDOW_HOURS",       float, "Свободное окно (хитмап)"),
+    "viz_urgent":  ("URGENT_TASK_DAYS",            int,   "Срочно"),
+    "viz_warm":    ("WARM_TASK_DAYS",              int,   "Тёплая"),
+    "viz_workhrs": ("WORK_HOURS_PER_WEEK",         int,   "Часов в неделю"),
+}
+
+
+@router.callback_query(F.data.startswith("settings:viz_") & ~F.data.in_({"settings:viz_routine_edit"}))
+async def cb_viz_set(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    if len(parts) != 3:
+        await callback.answer()
+        return
+    field_key, raw = parts[1], parts[2]
+    spec = _VIZ_FIELDS.get(field_key)
+    if not spec:
+        await callback.answer()
+        return
+    config_key, caster, label = spec
+    try:
+        value = caster(raw)
+    except ValueError:
+        await callback.answer("Ошибка значения")
+        return
+    _apply(config_key, value)
+    await callback.message.edit_text(_viz_text(), reply_markup=_viz_kb(), parse_mode="Markdown")
+    await callback.answer(f"{label}: {value}")
+
+
+@router.callback_query(F.data == "settings:viz_routine_edit")
+async def cb_viz_routine(callback: CallbackQuery) -> None:
+    uid = callback.from_user.id
+    _settings_sessions[uid] = "ROUTINE_PATTERNS"
+    current = config.ROUTINE_PATTERNS or "(пусто)"
+    await callback.message.edit_text(
+        "✏️ Отправь список рутинных паттернов через запятую (regex поддерживается).\n"
+        f"Текущие: `{current}`\n\n"
+        "Пример: `Дорога,Coffee,Standup`",
+        parse_mode="Markdown",
+    )
     await callback.answer()
 
 
@@ -505,6 +629,8 @@ async def cb_hour(callback: CallbackQuery) -> None:
 async def cb_briefing(callback: CallbackQuery) -> None:
     val = callback.data[len("settings:briefing:"):]
     _apply("BRIEFING_TIME", val)
+    from app.services.scheduler_ref import reschedule_briefing
+    reschedule_briefing(val, config.TIMEZONE)
     await callback.message.edit_text(_schedule_text(), reply_markup=_schedule_kb(), parse_mode="Markdown")
     await callback.answer(f"Брифинг: {val}")
 
@@ -549,6 +675,8 @@ async def cb_tz_set(callback: CallbackQuery) -> None:
         await callback.answer(f"Неверная зона: {val}")
         return
     _apply("TIMEZONE", val)
+    from app.services.scheduler_ref import reschedule_briefing
+    reschedule_briefing(config.BRIEFING_TIME, val)
     await callback.message.edit_text(_tz_text(), reply_markup=_tz_kb(), parse_mode="Markdown")
     await callback.answer(f"Зона: {val}")
 
@@ -590,6 +718,8 @@ async def handle_settings_text(message: Message) -> None:
             await message.answer(f"❌ Неверная временная зона: `{value}`\nПример: `Asia/Almaty`", parse_mode="Markdown")
             return
         _apply("TIMEZONE", value)
+        from app.services.scheduler_ref import reschedule_briefing
+        reschedule_briefing(config.BRIEFING_TIME, value)
         await message.answer(f"✅ Временная зона: `{value}`", parse_mode="Markdown")
         await message.answer(_tz_text(), reply_markup=_tz_kb(), parse_mode="Markdown")
 
@@ -606,6 +736,25 @@ async def handle_settings_text(message: Message) -> None:
         label = "Groq API ключ" if field == "GROQ_API_KEY" else "Google AI ключ"
         await message.answer(f"✅ {label} сохранён", parse_mode="Markdown")
         await message.answer(_keys_text(), reply_markup=_keys_kb(), parse_mode="Markdown")
+
+    elif field == "ROUTINE_PATTERNS":
+        # Validate that each pattern is a valid regex (or empty)
+        import re as _re
+        bad = []
+        for p in [x.strip() for x in value.split(",") if x.strip()]:
+            try:
+                _re.compile(p)
+            except _re.error as exc:
+                bad.append(f"{p}: {exc}")
+        if bad:
+            await message.answer(
+                "❌ Невалидные regex:\n" + "\n".join(f"  • `{b}`" for b in bad),
+                parse_mode="Markdown",
+            )
+            return
+        _apply("ROUTINE_PATTERNS", value)
+        await message.answer(f"✅ Рутинные паттерны: `{value or '(пусто)'}`", parse_mode="Markdown")
+        await message.answer(_viz_text(), reply_markup=_viz_kb(), parse_mode="Markdown")
 
     elif field == "GOOGLE_CREDENTIALS_JSON":
         try:

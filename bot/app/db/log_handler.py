@@ -1,8 +1,10 @@
 """
 SQLite logging handler — пишет записи логов в таблицу bot_logs.
 Используется вместе со стандартным logging; доступ к БД только через SSH.
+emit() выполняется в отдельном потоке чтобы не блокировать event loop.
 """
 
+import concurrent.futures
 import logging
 import os
 import sqlite3
@@ -10,9 +12,15 @@ import sqlite3
 
 _MAX_ROWS_DEFAULT = 10_000
 
+# Single-thread executor: log writes are sequential, no concurrent DB corruption
+_log_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="sqlite_log",
+)
+
 
 class SqliteLogHandler(logging.Handler):
-    """Синхронный logging.Handler, записывающий в SQLite (без aiosqlite)."""
+    """logging.Handler that writes to SQLite without blocking the event loop."""
 
     def __init__(self, db_path: str):
         super().__init__()
@@ -40,6 +48,10 @@ class SqliteLogHandler(logging.Handler):
             conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_ts    ON bot_logs(ts)")
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Submit to thread pool — returns immediately, does not block the caller
+        _log_executor.submit(self._do_emit, record)
+
+    def _do_emit(self, record: logging.LogRecord) -> None:
         try:
             exc = record.exc_text or None
             ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
@@ -48,7 +60,6 @@ class SqliteLogHandler(logging.Handler):
                     "INSERT INTO bot_logs(ts, level, logger, message, exc_text) VALUES (?,?,?,?,?)",
                     (ts, record.levelname, record.name, record.getMessage(), exc),
                 )
-                # Автоматически удаляем старые строки сверх лимита
                 conn.execute(
                     "DELETE FROM bot_logs WHERE id <= (SELECT MAX(id) - ? FROM bot_logs)",
                     (self._max_rows,),
