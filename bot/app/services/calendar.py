@@ -223,10 +223,14 @@ def get_auth_url(user_id: int) -> str:
     """
     Генерирует OAuth URL для повторной авторизации конкретного пользователя.
     Сохраняет flow в _pending_auth_flows[user_id] для последующего обмена кода на токен.
+
+    Использует http://localhost как redirect_uri — Google прекратил поддержку
+    OOB-flow (urn:ietf:wg:oauth:2.0:oob) в октябре 2022. После consent браузер
+    перенаправит на localhost (страница не откроется, но URL содержит ?code=...).
     """
     client_config = json.loads(config.GOOGLE_CREDENTIALS_JSON)
     flow = InstalledAppFlow.from_client_config(
-        client_config, SCOPES, redirect_uri="urn:ietf:wg:oauth:2.0:oob"
+        client_config, SCOPES, redirect_uri="http://localhost"
     )
     auth_url, _ = flow.authorization_url(access_type="offline", prompt="consent")
     _pending_auth_flows[user_id] = flow
@@ -236,13 +240,26 @@ def get_auth_url(user_id: int) -> str:
 def complete_auth(code: str, user_id: int) -> None:
     """
     Завершает OAuth flow, принимая код авторизации от пользователя.
+    Принимает как чистый код, так и полный URL вида http://localhost/?code=XXX&...
+
     Сохраняет новый токен в файл и обновляет in-memory кэш.
     """
     global _credentials_cache
     flow = _pending_auth_flows.pop(user_id, None)
     if flow is None:
         raise RuntimeError("Нет активного flow. Сначала вызови get_auth_url().")
-    flow.fetch_token(code=code.strip())
+
+    # Если пользователь вставил полный URL — извлекаем code из query
+    code = code.strip()
+    if code.startswith("http://") or code.startswith("https://"):
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(code)
+        codes = parse_qs(parsed.query).get("code", [])
+        if not codes:
+            raise RuntimeError("В URL нет параметра ?code=...")
+        code = codes[0]
+
+    flow.fetch_token(code=code)
     creds = flow.credentials
     _save_token(creds)
     _credentials_cache = creds
