@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.config import config
-from app.services.calendar import _get_credentials, _google_api_executor, _with_retry
+from app.services.calendar import _get_credentials, _google_api_executor, _google_run
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +44,6 @@ def _format_task(task: dict) -> dict:
 
 async def get_tasks() -> list[dict]:
     """Получает активные (незавершённые) задачи из Google Tasks."""
-    import asyncio
-
-    @_with_retry()
     def _fetch():
         service = _build_tasks_service()
         result = (
@@ -65,12 +62,7 @@ async def get_tasks() -> list[dict]:
             if t.get("status") == "needsAction"
         ]
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _fetch)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (get_tasks): %s", e)
-        raise
+    return await _google_run(_fetch)
 
 
 async def create_task(
@@ -78,9 +70,6 @@ async def create_task(
     start_time: str = "", end_time: str = "",
 ) -> dict:
     """Создаёт задачу в Google Tasks. start_time/end_time хранятся в notes."""
-    import asyncio
-
-    @_with_retry()
     def _create():
         service = _build_tasks_service()
         body: dict[str, Any] = {"title": title}
@@ -107,19 +96,11 @@ async def create_task(
         logger.info("Создана задача: %s (%s)", title, task.get("id"))
         return _format_task(task)
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _create)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (create_task): %s", e)
-        raise
+    return await _google_run(_create)
 
 
 async def complete_task(task_id: str) -> dict:
     """Отмечает задачу выполненной."""
-    import asyncio
-
-    @_with_retry()
     def _complete():
         service = _build_tasks_service()
         task = (
@@ -136,38 +117,22 @@ async def complete_task(task_id: str) -> dict:
         logger.info("Задача выполнена: %s", task_id)
         return _format_task(updated)
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _complete)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (complete_task): %s", e)
-        raise
+    return await _google_run(_complete)
 
 
 async def delete_task(task_id: str) -> dict:
     """Удаляет задачу из Google Tasks."""
-    import asyncio
-
-    @_with_retry()
     def _delete():
         service = _build_tasks_service()
         service.tasks().delete(tasklist=_DEFAULT_TASKLIST, task=task_id).execute()
         logger.info("Удалена задача: %s", task_id)
         return {"status": "deleted", "task_id": task_id}
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _delete)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (delete_task): %s", e)
-        raise
+    return await _google_run(_delete)
 
 
 async def update_task(task_id: str, fields: dict) -> dict:
     """Обновляет поля задачи."""
-    import asyncio
-
-    @_with_retry()
     def _update():
         service = _build_tasks_service()
         task = (
@@ -223,19 +188,11 @@ async def update_task(task_id: str, fields: dict) -> dict:
         logger.info("Обновлена задача: %s", task_id)
         return _format_task(updated)
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _update)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (update_task): %s", e)
-        raise
+    return await _google_run(_update)
 
 
 async def get_recently_completed_tasks(minutes: int = 20) -> list[dict]:
     """Возвращает задачи, выполненные за последние N минут."""
-    import asyncio
-
-    @_with_retry()
     def _fetch():
         service = _build_tasks_service()
         completed_min = (
@@ -255,9 +212,4 @@ async def get_recently_completed_tasks(minutes: int = 20) -> list[dict]:
         items = result.get("items", [])
         return [_format_task(t) for t in items if t.get("status") == "completed"]
 
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(_google_api_executor, _fetch)
-    except HttpError as e:
-        logger.error("Ошибка Tasks API (get_recently_completed_tasks): %s", e)
-        raise
+    return await _google_run(_fetch)

@@ -8,7 +8,9 @@ import copy
 import json
 import logging
 import re
+import time
 import zoneinfo as _zi
+from collections import deque
 from datetime import datetime as _dt, date as _date, timedelta
 
 from aiogram import F, Router
@@ -38,6 +40,24 @@ _pending_confirm_msgs: dict[int, tuple[int, int]] = {}
 
 # Хранилище grid-сессий выбора слота: user_id -> session
 _grid_sessions: dict[int, dict] = {}
+
+# ─── Rate limiting ─────────────────────────────────────────────────────────────
+_RATE_LIMIT = 5        # max messages per user per window
+_RATE_WINDOW = 60.0    # window in seconds
+_user_rate: dict[int, "deque[float]"] = {}
+
+
+def _check_rate_limit(user_id: int) -> bool:
+    """Returns True if request is allowed, False if rate limit exceeded."""
+    now = time.monotonic()
+    q = _user_rate.setdefault(user_id, deque())
+    while q and now - q[0] > _RATE_WINDOW:
+        q.popleft()
+    if len(q) >= _RATE_LIMIT:
+        return False
+    q.append(now)
+    return True
+
 
 # ─── Grid constants ────────────────────────────────────────────────────────────
 _GRID_START = 9    # 09:00
@@ -662,6 +682,12 @@ async def handle_text_message(message: Message) -> None:
     user_id   = message.from_user.id
     user_text = message.text.strip()
     if not user_text:
+        return
+
+    if not _check_rate_limit(user_id):
+        await message.answer(
+            f"⏳ Слишком много запросов. Лимит: {_RATE_LIMIT} сообщений в минуту."
+        )
         return
 
     _pending_confirmations.pop(user_id, None)
