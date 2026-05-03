@@ -2,6 +2,7 @@
 Утренний брифинг — cron-задача, отправляет сводку всем пользователям из whitelist.
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -11,6 +12,9 @@ from aiogram import Bot
 from app.config import config
 import app.services.calendar as cal
 import app.services.tasks as tasks_svc
+
+# Семафор для рассылки нескольким пользователям — не превышаем Telegram rate limit
+_SEND_SEM = asyncio.Semaphore(10)
 
 logger = logging.getLogger(__name__)
 
@@ -163,19 +167,18 @@ async def build_briefing_text() -> str:
 
 
 async def send_briefing(bot: Bot) -> None:
-    """Отправляет брифинг всем пользователям из whitelist."""
+    """Отправляет брифинг всем пользователям из whitelist параллельно (с семафором)."""
     text = await build_briefing_text()
 
-    for user_id in config.ALLOWED_IDS:
-        try:
-            await bot.send_message(
-                user_id,
-                text,
-                parse_mode="Markdown",
-            )
-            logger.info("Брифинг отправлен: %s", user_id)
-        except Exception as e:
-            logger.error("Ошибка отправки брифинга пользователю %s: %s", user_id, e)
+    async def _send_one(uid: int) -> None:
+        async with _SEND_SEM:
+            try:
+                await bot.send_message(uid, text, parse_mode="Markdown")
+                logger.info("Брифинг отправлен: %s", uid)
+            except Exception as e:
+                logger.error("Ошибка отправки брифинга пользователю %s: %s", uid, e)
+
+    await asyncio.gather(*[_send_one(u) for u in config.ALLOWED_IDS], return_exceptions=True)
 
 
 async def send_weekly_retro(bot: Bot) -> None:
@@ -230,17 +233,26 @@ async def send_weekly_retro(bot: Bot) -> None:
         img_bytes = await _generate_heatmap_image(
             week_events, config.TIMEZONE, week_start=week_start
         )
-        photo = BufferedInputFile(img_bytes, filename="retro.png")
-        for user_id in config.ALLOWED_IDS:
-            try:
-                await bot.send_photo(user_id, photo, caption=caption, parse_mode="Markdown")
-            except Exception as e:
-                logger.error("Ошибка отправки ретро пользователю %s: %s", user_id, e)
+
+        async def _send_photo(uid: int) -> None:
+            async with _SEND_SEM:
+                # BufferedInputFile создаём для каждого получателя — file_id не reusable до первой загрузки
+                photo = BufferedInputFile(img_bytes, filename="retro.png")
+                try:
+                    await bot.send_photo(uid, photo, caption=caption, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error("Ошибка отправки ретро пользователю %s: %s", uid, e)
+
+        await asyncio.gather(*[_send_photo(u) for u in config.ALLOWED_IDS], return_exceptions=True)
     except Exception as e:
         logger.error("Ошибка генерации heatmap для ретро: %s", e)
+
         # Fallback: только текст
-        for user_id in config.ALLOWED_IDS:
-            try:
-                await bot.send_message(user_id, caption, parse_mode="Markdown")
-            except Exception as ex:
-                logger.error("Ошибка отправки текстового ретро %s: %s", user_id, ex)
+        async def _send_text(uid: int) -> None:
+            async with _SEND_SEM:
+                try:
+                    await bot.send_message(uid, caption, parse_mode="Markdown")
+                except Exception as ex:
+                    logger.error("Ошибка отправки текстового ретро %s: %s", uid, ex)
+
+        await asyncio.gather(*[_send_text(u) for u in config.ALLOWED_IDS], return_exceptions=True)

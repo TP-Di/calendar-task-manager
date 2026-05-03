@@ -266,12 +266,44 @@ async def _fetch_day_events(date_str: str) -> list[dict]:
 
 # ─── Main agent response handler ──────────────────────────────────────────────
 
+_TG_MAX = 4000  # safety margin под 4096-байтный лимит Telegram
+
+
+def _split_long(text: str, limit: int = _TG_MAX) -> list[str]:
+    """Режет длинный текст по \\n\\n / \\n на части ≤ limit символов."""
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        # Сначала пробуем разрезать по двойному переводу
+        cut = remaining.rfind("\n\n", 0, limit)
+        if cut < limit // 2:
+            cut = remaining.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        parts.append(remaining[:cut].rstrip())
+        remaining = remaining[cut:].lstrip()
+    if remaining:
+        parts.append(remaining)
+    return parts
+
+
+async def _send_safe(message: Message, text: str) -> None:
+    """Отправляет текст с разбивкой на куски ≤ _TG_MAX. Markdown с фолбэком на plain."""
+    for chunk in _split_long(text):
+        try:
+            await message.answer(chunk, parse_mode="Markdown")
+        except Exception:
+            try:
+                await message.answer(chunk, parse_mode=None)
+            except Exception as e:
+                logger.error("Не удалось отправить чанк: %s", e)
+
+
 async def handle_agent_response(message: Message, response: str, user_id: int) -> None:
     if not response.startswith("PENDING_TOOL::"):
-        try:
-            await message.answer(response, parse_mode="Markdown")
-        except Exception:
-            await message.answer(response, parse_mode=None)
+        await _send_safe(message, response)
         return
 
     json_str = response[len("PENDING_TOOL::"):]
@@ -404,6 +436,9 @@ async def handle_grid_day_nav(callback: CallbackQuery) -> None:
 
     try:
         events = await _fetch_day_events(new_date_str)
+    except TokenExpiredError:
+        await send_token_expired(callback.message)
+        return
     except Exception as _e:
         logger.warning("Не удалось загрузить события для %s: %s", new_date_str, _e)
         events = []

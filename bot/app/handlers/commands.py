@@ -65,6 +65,23 @@ async def _generate_heatmap_image(
     week_start: "datetime | None" = None,
     tasks: list | None = None,
 ) -> bytes:
+    """Wrapper, гарантирующий закрытие matplotlib figures даже при исключении."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    try:
+        return await _generate_heatmap_impl(events, tz_str, days, week_start, tasks)
+    finally:
+        # Закрываем ВСЕ незакрытые figures (utility cleanup) на случай если impl
+        # упал между plt.figure() и plt.close().
+        plt.close("all")
+
+
+async def _generate_heatmap_impl(
+    events: list, tz_str: str, days: int = 7,
+    week_start: "datetime | None" = None,
+    tasks: list | None = None,
+) -> bytes:
     """
     PNG: heatmap расписания + pie нагрузки.
     - Адаптивный Y-диапазон по реальным событиям, clamped в [HEATMAP_HOUR_MIN, MAX].
@@ -391,7 +408,13 @@ async def _generate_heatmap_image(
 
     plt.tight_layout(pad=1.5)
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    # H8: dpi=100 для контроля размера. Telegram лимит 10 MB на photo;
+    # если PNG > 9 MB — перерендер с dpi=70.
+    plt.savefig(buf, format="png", dpi=100, bbox_inches="tight", facecolor=BG, edgecolor="none")
+    if buf.tell() > 9_000_000:
+        buf.seek(0)
+        buf.truncate()
+        plt.savefig(buf, format="png", dpi=70, bbox_inches="tight", facecolor=BG, edgecolor="none")
     plt.close(fig)
     buf.seek(0)
     return buf.read()
@@ -952,10 +975,14 @@ async def cmd_heatmap(message: Message) -> None:
 
     photo = BufferedInputFile(img_bytes, filename="heatmap.png")
     date_range = f"{fetch_start.strftime('%d.%m')} – {(fetch_end - timedelta(days=1)).strftime('%d.%m')}"
-    await message.answer_photo(
-        photo,
-        caption=(
-            f"📊 Расписание: {date_range}\n"
-            "Цвета — категории · обводка ■ — нельзя двигать · 🚗 — рутина · 🟢 — свободно · 📌 — дедлайны"
-        ),
-    )
+    try:
+        await message.answer_photo(
+            photo,
+            caption=(
+                f"📊 Расписание: {date_range}\n"
+                "Цвета — категории · обводка ■ — нельзя двигать · 🚗 — рутина · 🟢 — свободно · 📌 — дедлайны"
+            ),
+        )
+    except Exception as e:
+        logger.error("Ошибка отправки heatmap: %s", e)
+        await message.answer(f"❌ Не удалось отправить изображение: {e}")

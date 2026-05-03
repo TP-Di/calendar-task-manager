@@ -503,8 +503,21 @@ async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
 
     # Точное совпадение (без эмодзи) предпочтительнее частичного
     exact = [t for t in matches if _strip_emoji(t.get("title", "")).lower() == search]
-    found = exact[0] if exact else matches[0]
-    return {**tool_args, "task_id": found["id"]}, None
+    candidates = exact if exact else matches
+
+    if len(candidates) > 1:
+        # H6: не выбираем случайно — просим уточнить
+        lines = [f"❌ Найдено {len(candidates)} задач с таким названием:"]
+        for t in candidates[:5]:
+            due = t.get("due", "")
+            due_str = f" (до {due[:10]})" if due else ""
+            lines.append(f"  • {t.get('title', '?')}{due_str}")
+        if len(candidates) > 5:
+            lines.append(f"  ... и ещё {len(candidates) - 5}")
+        lines.append("Уточни какую именно (например, добавь дату).")
+        return tool_args, "\n".join(lines)
+
+    return {**tool_args, "task_id": candidates[0]["id"]}, None
 
 
 async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:

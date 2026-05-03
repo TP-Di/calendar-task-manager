@@ -3,6 +3,7 @@
 Тихие часы, эскалация, snooze через inline кнопки.
 """
 
+import asyncio
 import logging
 import zoneinfo
 from datetime import datetime, timedelta, timezone
@@ -13,6 +14,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from app.config import config
 import app.services.calendar as cal_svc
 import app.services.tasks as tasks_svc
+
+_SEND_SEM = asyncio.Semaphore(10)
 
 logger = logging.getLogger(__name__)
 
@@ -125,18 +128,17 @@ async def check_and_send_reminders(bot: Bot) -> None:
 
         keyboard = _make_snooze_keyboard(task_id) if task_id else None
 
-        for user_id in config.ALLOWED_IDS:
-            try:
-                await bot.send_message(
-                    user_id,
-                    text,
-                    parse_mode="Markdown",
-                    reply_markup=keyboard,
-                )
-            except Exception as e:
-                logger.error(
-                    "Ошибка отправки напоминания пользователю %s: %s", user_id, e
-                )
+        async def _send_one(uid: int, t: str = text, kb=keyboard) -> None:
+            async with _SEND_SEM:
+                try:
+                    await bot.send_message(uid, t, parse_mode="Markdown", reply_markup=kb)
+                except Exception as e:
+                    logger.error("Ошибка отправки напоминания пользователю %s: %s", uid, e)
+
+        await asyncio.gather(
+            *[_send_one(u) for u in config.ALLOWED_IDS],
+            return_exceptions=True,
+        )
 
 
 def _check_escalation_window(
@@ -233,8 +235,15 @@ async def sync_completed_tasks(bot) -> None:
         for t in updated_titles:
             lines.append(f"  • {t}")
         text = "\n".join(lines)
-        for user_id in config.ALLOWED_IDS:
-            try:
-                await bot.send_message(user_id, text, parse_mode="Markdown")
-            except Exception as e:
-                logger.error("sync_completed_tasks: ошибка отправки уведомления: %s", e)
+
+        async def _send_one(uid: int, t: str = text) -> None:
+            async with _SEND_SEM:
+                try:
+                    await bot.send_message(uid, t, parse_mode="Markdown")
+                except Exception as e:
+                    logger.error("sync_completed_tasks: ошибка отправки уведомления: %s", e)
+
+        await asyncio.gather(
+            *[_send_one(u) for u in config.ALLOWED_IDS],
+            return_exceptions=True,
+        )
