@@ -249,15 +249,15 @@ async def _generate_heatmap_impl(
                     zorder=3, clip_on=True,
                 )
 
-    # Дневные тоталы
+    # Дневные тоталы — компактный формат: «3.0» или «3.0+0.5» (без эмодзи)
     for i in range(days):
         h = day_hours.get(i, 0.0)
         rt = day_routine_hours.get(i, 0.0)
         if h > 0 or rt > 0:
-            txt = f"{h:.1f}ч" + (f" +{rt:.1f}🚗" if rt > 0.05 else "")
-            ax.text(i + 0.5, -0.55, txt,
+            txt = f"{h:.1f}+{rt:.1f}" if rt > 0.05 else f"{h:.1f}"
+            ax.text(i + 0.5, -0.45, txt,
                     ha="center", va="center",
-                    fontsize=8.5, color="#e3b341", fontweight="bold", zorder=5)
+                    fontsize=8, color="#e3b341", fontweight="bold", zorder=5)
 
     # ── Дедлайны задач ──────────────────────────────────────────────────────
     deadline_strip_y = N + 0.7
@@ -334,7 +334,8 @@ async def _generate_heatmap_impl(
             loc="upper right", facecolor=AX, edgecolor=GRID,
             labelcolor=TEXT, fontsize=8.5, framealpha=0.95,
         )
-    ax.set_title("Расписание на неделю", color=TEXT, fontsize=13, fontweight="bold", pad=22)
+    # Заголовок выше дневных итогов (pad=42 даёт зазор примерно в одну строку)
+    ax.set_title("Расписание на неделю", color=TEXT, fontsize=13, fontweight="bold", pad=42)
 
     # ── PIE CHART ───────────────────────────────────────────────────────────
     pie_data: dict[str, float] = {}
