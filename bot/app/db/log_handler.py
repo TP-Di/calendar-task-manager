@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sqlite3
+import time
 
 
 # Паттерны секретов для редактирования перед записью в БД
@@ -79,7 +80,9 @@ class SqliteLogHandler(logging.Handler):
         try:
             msg = _redact(record.getMessage())
             exc = _redact(record.exc_text) if record.exc_text else None
-            ts = self.formatTime(record, "%Y-%m-%d %H:%M:%S")
+            # logging.Handler не имеет formatTime — это метод Formatter.
+            # Берём timestamp из record.created напрямую.
+            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
             with self._conn() as conn:
                 conn.execute(
                     "INSERT INTO bot_logs(ts, level, logger, message, exc_text) VALUES (?,?,?,?,?)",
