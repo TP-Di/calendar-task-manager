@@ -831,7 +831,9 @@ def _describe_tool_action(tool_name: str, tool_args: dict) -> str:
     if ids:
         lines.append(f"ID: {', '.join(ids)}")
     if desc:
-        lines.append(f"Описание: {desc}")
+        clean_desc = re.sub(r"\[CATEGORY:[^\]]*\]", "", desc, flags=re.IGNORECASE).strip()
+        if clean_desc:
+            lines.append(f"Описание: {clean_desc}")
 
     # Доп. поля только для create_event
     if tool_name == "create_event":

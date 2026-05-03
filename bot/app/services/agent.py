@@ -5,6 +5,7 @@ AI агент на базе Groq API с tool calling.
 
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 
 from openai import AsyncOpenAI
@@ -42,7 +43,8 @@ URL из сообщения → автоматически в поле descripti
 
 Приоритеты: Бакалавр > Работа > Магистратура > Проекты > Курсы
 Теги: [HARD]=нельзя трогать · [SOFT]=можно двигать · [PRIORITY:x] · [DEPENDS:x] · [CATEGORY:учёба|работа|дорога|личное]
-ВСЕГДА добавляй [CATEGORY:x] в description при create_event/bulk_create_events. Если непонятно — [CATEGORY:личное].
+При create_event/bulk_create_events ВСЕГДА добавляй тег в description. Формат строго: [CATEGORY:учёба] (с квадратными скобками). Добавляй в конец description, не заменяй другой текст. Пример: "Материалы занятия [CATEGORY:учёба]". Если непонятно — [CATEGORY:личное].
+Не добавляй эмодзи в начало title при create_task — только чистый текст без эмодзи-префикса.
 
 ## Правила (строго):
 1. Изменения (create/update/delete) — вызывай tool без текстового описания. Система сама покажет подтверждение.
@@ -450,9 +452,25 @@ def _format_tool_success(tool_name: str, result) -> str:
     return "✅ Действие выполнено."
 
 
+_EMOJI_RE = re.compile(
+    "[\U0001F300-\U0001F9FF\U0001FA00-\U0001FAFF"
+    "\U00002600-\U000027BF\U0001F000-\U0001F0FF"
+    "\U0001F100-\U0001F1FF✂-➰↔-↙"
+    "⏩-⏳▪-◾☔-☕]+",
+    flags=re.UNICODE,
+)
+
+
+def _strip_emoji(s: str) -> str:
+    """Удаляет эмодзи из строки для сравнения названий."""
+    return _EMOJI_RE.sub("", s).strip()
+
+
 async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
     """
     Если task_id отсутствует или является плейсхолдером — ищет задачу по task_title.
+    Сравнение ведётся без учёта эмодзи — LLM иногда меняет эмодзи-префикс между
+    созданием и удалением задачи.
     Возвращает (обновлённые args, сообщение об ошибке или None).
     """
     task_id = tool_args.get("task_id", "")
@@ -468,13 +486,13 @@ async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
     except Exception as e:
         return tool_args, f"❌ Ошибка получения задач: {e}"
 
-    title_lower = task_title.lower()
-    matches = [t for t in tasks if title_lower in t.get("title", "").lower()]
+    search = _strip_emoji(task_title).lower()
+    matches = [t for t in tasks if search in _strip_emoji(t.get("title", "")).lower()]
     if not matches:
         return tool_args, f"❌ Задача «{task_title}» не найдена среди активных."
 
-    # Точное совпадение предпочтительнее частичного
-    exact = [t for t in matches if t.get("title", "").lower() == title_lower]
+    # Точное совпадение (без эмодзи) предпочтительнее частичного
+    exact = [t for t in matches if _strip_emoji(t.get("title", "")).lower() == search]
     found = exact[0] if exact else matches[0]
     return {**tool_args, "task_id": found["id"]}, None
 
