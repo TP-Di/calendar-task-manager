@@ -401,7 +401,8 @@ async def cmd_start(message: Message) -> None:
     """Приветственное сообщение."""
     await message.answer(
         "👋 Привет! Я твой персональный планировщик.\n\n"
-        "Просто напиши что нужно сделать — добавить занятие, перенести встречу, посмотреть расписание.",
+        "Просто напиши что нужно — добавить занятие, перенести встречу, посмотреть расписание.\n\n"
+        "Кнопки внизу — быстрый доступ. /help — все команды. /settings — настройки.",
         parse_mode=None,
         reply_markup=MAIN_KB,
     )
@@ -610,15 +611,20 @@ async def btn_tasks(message: Message) -> None:
 async def cmd_help(message: Message) -> None:
     """Список доступных команд."""
     text = (
-        "📖 *Справка:*\n\n"
-        "Просто пиши что нужно — я пойму без команд.\n\n"
-        "*Кнопки:*\n"
-        "📊 Статус — задачи и события на 3 дня\n"
-        "📅 Нагрузка — визуальный график расписания на неделю\n"
-        "🗓 Что сегодня? — события на сегодня\n"
-        "📋 Задачи — список активных задач\n\n"
+        "📖 *Справка*\n\n"
+        "Пиши свободным текстом — я пойму («перенеси встречу», «добавь дедлайн на пятницу»).\n\n"
+        "*Кнопки на клавиатуре:*\n"
+        "📊 Статус — что сейчас/далее, события на сегодня и завтра, горящие задачи\n"
+        "📅 Нагрузка — визуальный график недели с категориями и дедлайнами\n"
+        "🗓 Что сегодня? — события + свободные окна + задачи на эту неделю\n"
+        "📋 Задачи — все активные, по неделям\n\n"
         "*Команды:*\n"
+        "/load — текстовая сводка нагрузки по дням и категориям\n"
+        "/done <название> — отметить задачу выполненной\n"
+        "/postpone <название> <время> — отложить задачу\n"
         "/upload — загрузить PDF с расписанием\n"
+        "/settings — настройки (LLM, ключи, часы, визуализация)\n"
+        "/reauth — переавторизация Google Calendar\n"
         "/clear — сбросить историю диалога"
     )
     await message.answer(text, parse_mode="Markdown", reply_markup=MAIN_KB)
@@ -703,11 +709,9 @@ async def cmd_status(message: Message) -> None:
 
 @router.message(Command("load"))
 async def cmd_load(message: Message) -> None:
-    """Показывает нагрузку (часов событий) на текущую неделю."""
-    await message.answer("⏳ Считаю нагрузку...")
-
-    now = datetime.now(ZoneInfo(config.TIMEZONE))
-    # Начало текущей недели (понедельник)
+    """Текстовая сводка нагрузки на текущую неделю по дням и категориям."""
+    tz = ZoneInfo(config.TIMEZONE)
+    now = datetime.now(tz)
     week_start = (now - timedelta(days=now.weekday())).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -716,40 +720,74 @@ async def cmd_load(message: Message) -> None:
     try:
         events = await cal.get_events(week_start.isoformat(), week_end.isoformat())
     except Exception as e:
-        logger.error("Ошибка Calendar API (/load): %s", e)
-        await message.answer("❌ Ошибка загрузки событий из Calendar")
+        await _handle_error(message, e)
         return
+    try:
+        tasks = await tasks_svc.get_tasks()
+    except Exception as e:
+        logger.warning("Tasks API failed for /load: %s", e)
+        tasks = []
 
-    # Считаем часы по дням
-    days_load: dict[int, float] = {i: 0.0 for i in range(7)}
-    total_hours = 0.0
+    routine_pats = _routine_patterns()
+
+    # По дням: основное / рутина
+    day_main: dict[int, float] = {i: 0.0 for i in range(7)}
+    day_routine: dict[int, float] = {i: 0.0 for i in range(7)}
+    cat_hours: dict[str, float] = {}
+    routine_total = 0.0
 
     for ev in events:
-        start_str = ev.get("start", "")
-        end_str = ev.get("end", "")
-        if "T" not in start_str or "T" not in end_str:
+        s = ev.get("start", "")
+        e = ev.get("end", "")
+        if "T" not in s or "T" not in e:
             continue
         try:
-            start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
-            end_dt = datetime.fromisoformat(end_str.replace("Z", "+00:00"))
-            duration = (end_dt - start_dt).total_seconds() / 3600
-            day_idx = (start_dt.weekday())  # 0=пн
-            days_load[day_idx] = days_load.get(day_idx, 0.0) + duration
-            total_hours += duration
+            sd = tl.parse_iso_dt(s).astimezone(tz)
+            ed = tl.parse_iso_dt(e).astimezone(tz)
         except Exception:
             continue
+        hrs = (ed - sd).total_seconds() / 3600
+        idx = sd.weekday()
+        if cat.is_routine(ev, routine_pats):
+            day_routine[idx] += hrs
+            routine_total += hrs
+        else:
+            day_main[idx] += hrs
+            c = cat.event_category(ev)
+            cat_hours[c] = cat_hours.get(c, 0.0) + hrs
 
     day_names = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"]
     lines = [
-        f"📊 *Нагрузка на неделю ({week_start.strftime('%d.%m')} – {(week_end - timedelta(days=1)).strftime('%d.%m')}):*\n"
+        f"📊 *Нагрузка ({week_start.strftime('%d.%m')} – {(week_end - timedelta(days=1)).strftime('%d.%m')}):*\n"
     ]
     for i, name in enumerate(day_names):
-        hours = days_load.get(i, 0.0)
-        bar = "█" * int(hours / 2) if hours > 0 else "·"
-        lines.append(f"  {name}: {hours:.1f}ч {bar}")
+        m = day_main[i]
+        r = day_routine[i]
+        if m == 0 and r == 0:
+            lines.append(f"  {name}: —")
+            continue
+        suffix = f" + 🚗 {tl.format_duration_short(r)}" if r > 0.05 else ""
+        lines.append(f"  {name}: {tl.format_duration_short(m)}{suffix}")
 
-    lines.append(f"\n*Итого:* {total_hours:.1f}ч за неделю")
-    lines.append(f"*Событий:* {len(events)}")
+    # По категориям
+    if cat_hours or routine_total > 0:
+        lines.append("\n*📂 По категориям:*")
+        cat_emoji = {"учёба": "📚", "работа": "💼", "личное": "🎉", cat.UNKNOWN_CATEGORY: "❓"}
+        for c, h in sorted(cat_hours.items(), key=lambda x: -x[1]):
+            label = c.capitalize() if c != cat.UNKNOWN_CATEGORY else "Без категории"
+            lines.append(f"  {cat_emoji.get(c, '·')} {label}: {tl.format_duration_short(h)}")
+        if routine_total > 0.05:
+            lines.append(f"  🚗 Дорога: {tl.format_duration_short(routine_total)}")
+
+    # Итого
+    main_total = sum(day_main.values())
+    grand_total = main_total + routine_total
+    per_week = config.WORK_HOURS_PER_WEEK or 0
+    pct_str = f" ({main_total / per_week * 100:.0f}% от {per_week}ч)" if per_week > 0 else ""
+    lines.append(f"\n*Итого:* {tl.format_duration_short(main_total)}{pct_str}")
+    if routine_total > 0.05:
+        lines.append(f"*С учётом дороги:* {tl.format_duration_short(grand_total)}")
+    lines.append(f"*Событий:* {len(events)} • *Активных задач:* {len(tasks)}")
 
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
@@ -759,9 +797,7 @@ async def cmd_done(message: Message) -> None:
     """Отмечает задачу выполненной по частичному совпадению названия."""
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
-        await message.answer(
-            "Укажи название задачи: /done Сдать отчёт"
-        )
+        await message.answer("Укажи название задачи: `/done Сдать отчёт`", parse_mode="Markdown")
         return
 
     query = args[1].strip().lower()
@@ -769,55 +805,59 @@ async def cmd_done(message: Message) -> None:
     try:
         tasks = await tasks_svc.get_tasks()
     except Exception as e:
-        logger.error("Ошибка Tasks API (/done): %s", e)
-        await message.answer("❌ Ошибка загрузки задач")
+        await _handle_error(message, e)
         return
 
     matches = [t for t in tasks if query in t.get("title", "").lower()]
 
     if not matches:
-        await message.answer(f'Задача "{args[1]}" не найдена среди активных.')
+        await message.answer(f"Задача «{args[1]}» не найдена среди активных.")
         return
 
     if len(matches) > 1:
-        names = "\n".join(f"  • {t['title']}" for t in matches[:5])
-        await message.answer(
-            f"Найдено несколько задач, уточни название:\n{names}"
-        )
+        names = "\n".join(f"  • {cat.clean_title(t.get('title', ''))}" for t in matches[:5])
+        await message.answer(f"Найдено несколько, уточни название:\n{names}")
         return
 
     task = matches[0]
+    title = cat.clean_title(task.get("title", ""))
     try:
         await tasks_svc.complete_task(task["id"])
-        await message.answer(f"✅ Задача выполнена: *{task['title']}*", parse_mode="Markdown")
+        await message.answer(f"✅ Задача выполнена: *{title}*", parse_mode="Markdown")
     except Exception as e:
-        logger.error("Ошибка Tasks API (complete_task): %s", e)
-        await message.answer(f"❌ Ошибка при выполнении задачи: {e}")
+        logger.error("Ошибка Tasks API (complete_task): %s", e, exc_info=True)
+        await _handle_error(message, e)
 
 
 @router.message(Command("postpone"))
 async def cmd_postpone(message: Message) -> None:
-    """
-    Откладывает задачу. Формат: /postpone Название задачи 2024-01-20
-    Делегирует агенту для интерпретации времени.
-    """
+    """Откладывает задачу. Делегирует агенту для интерпретации времени."""
     args = message.text.split(maxsplit=1)
     if len(args) < 2:
         await message.answer(
-            "Укажи название и новое время: /postpone Сдать отчёт завтра в 18:00"
+            "Укажи название и новое время:\n`/postpone Сдать отчёт завтра в 18:00`",
+            parse_mode="Markdown",
         )
         return
 
-    # Делегируем агенту
     from app.services.agent import run_agent
+    from app.handlers.messages import handle_agent_response
 
     user_id = message.from_user.id
     prompt = f"Отложи задачу: {args[1]}"
 
-    await message.answer("⏳ Обрабатываю запрос...")
-    response = await run_agent(user_id, prompt)
+    thinking = await message.answer("⏳ Обрабатываю запрос...")
+    try:
+        response = await run_agent(user_id, prompt)
+    except Exception as e:
+        await _handle_error(message, e)
+        return
+    finally:
+        try:
+            await thinking.delete()
+        except Exception:
+            pass
 
-    from app.handlers.messages import handle_agent_response
     await handle_agent_response(message, response, user_id)
 
 
