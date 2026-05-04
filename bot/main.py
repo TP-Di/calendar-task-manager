@@ -35,11 +35,12 @@ logger = logging.getLogger(__name__)
 async def setup_bot_commands(bot: Bot) -> None:
     """Регистрирует команды в меню Telegram (только то, что нельзя через кнопки/агента)."""
     commands_list = [
-        BotCommand(command="upload",   description="📎 Загрузить PDF"),
-        BotCommand(command="settings", description="⚙️ Настройки"),
-        BotCommand(command="reauth",   description="🔑 Переавторизация Google"),
-        BotCommand(command="clear",    description="🗑 Сбросить историю"),
-        BotCommand(command="help",     description="📖 Справка"),
+        BotCommand(command="upload",    description="📎 Загрузить PDF"),
+        BotCommand(command="settings",  description="⚙️ Настройки"),
+        BotCommand(command="reauth",    description="🔑 Переавторизация Google"),
+        BotCommand(command="set_creds", description="📋 Загрузить Google credentials"),
+        BotCommand(command="clear",     description="🗑 Сбросить историю"),
+        BotCommand(command="help",      description="📖 Справка"),
     ]
     await bot.set_my_commands(commands_list)
 

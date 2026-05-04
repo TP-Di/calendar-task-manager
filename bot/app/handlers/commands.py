@@ -45,44 +45,78 @@ async def _handle_error(message: Message, e: Exception) -> None:
         await send_token_expired(message)
         return
     logger.error("Команда вернула ошибку: %s", e, exc_info=True)
+    # Краткий текст ошибки тоже показываем — иначе не понять что случилось.
+    # /reauth и /clear в Telegram автоматически становятся кликабельными.
+    err_text = str(e)[:200] or type(e).__name__
     await message.answer(
-        "❌ Произошла ошибка. Попробуй ещё раз.\n"
-        "Если повторяется — /reauth (переподключить Google) или /clear (сбросить историю)."
+        f"❌ Ошибка: {err_text}\n\n"
+        "Попробуй ещё раз. Если повторяется:\n"
+        "• /reauth — переподключить Google Calendar/Tasks\n"
+        "• /clear — сбросить историю диалога"
+    )
+
+
+async def _send_no_creds_setup(message: Message) -> None:
+    """Сообщение когда GOOGLE_CREDENTIALS_JSON отсутствует — два пути setup."""
+    await message.answer(
+        "❌ *Google credentials не настроены*\n\n"
+        "Нет переменной `GOOGLE_CREDENTIALS_JSON`\\. Команды Calendar/Tasks "
+        "и /reauth не работают — OAuth не знает где брать `client_id`\\.\n\n"
+        "*Сначала: создай OAuth client*\n"
+        "В Google Cloud Console → APIs \\& Services → Credentials → Create Credentials → "
+        "OAuth client ID → Desktop app\\. Скачай `credentials.json`\\.\n\n"
+        "*Дальше — два варианта:*\n\n"
+        "⚡ *Вариант 1 \\(быстро, прямо здесь\\):*\n"
+        "Нажми /set\\_creds → пришли мне `credentials.json` одной строкой\\. "
+        "Бот сохранит, /reauth сразу заработает\\.\n"
+        "_⚠️ На DO App Platform не переживает рестарт — придётся повторить\\._\n\n"
+        "🔒 *Вариант 2 \\(постоянно, переживает деплой\\):*\n"
+        "Локально: `python bot/scripts/env_from_json.py` → выдаст 2 строки "
+        "\\(creds \\+ token\\)\\. Скопируй их в DO → Apps → твой бот → "
+        "Settings → App\\-Level Environment Variables \\(Encrypted\\) → Save\\.\n",
+        parse_mode="MarkdownV2",
+        disable_web_page_preview=True,
     )
 
 
 async def send_token_expired(message: Message) -> None:
-    """Отправляет сообщение с ссылкой для повторной авторизации Google."""
+    """
+    Отправляет сообщение с ссылкой для повторной авторизации Google.
+    Если creds вообще не настроены — показывает шаги setup'а.
+    """
+    if not (config.GOOGLE_CREDENTIALS_JSON or "").strip():
+        await _send_no_creds_setup(message)
+        return
+
     try:
         user_id = message.from_user.id if message.from_user else 0
         auth_url = cal.get_auth_url(user_id)
-        text = (
-            "🔑 *Google авторизация*\n\n"
-            f"1\\. Перейди по [этой ссылке]({auth_url}) и разреши доступ\\. "
-            "Поставь галочки на ОБА scope: Calendar и Tasks\\.\n"
-            "2\\. Браузер перебросит на `http://localhost/...` — страница НЕ откроется "
-            "\\(это нормально\\)\\.\n"
-            "3\\. Скопируй ВСЮ ссылку из адресной строки и пришли её боту:\n"
-            "`/auth_code <ссылка>`\n\n"
-            "_Если ошибка — просто введи код заново\\. /auth\\_cancel сбросит "
-            "сеанс, потом /reauth\\._"
-        )
-        await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
     except Exception as e:
-        logger.error("Ошибка генерации auth URL: %s", e)
+        # Чаще всего тут невалидный JSON в GOOGLE_CREDENTIALS_JSON
+        logger.error("Ошибка генерации auth URL: %s", e, exc_info=True)
+        err = str(e)[:200] or type(e).__name__
         await message.answer(
-            "❌ *Google credentials не настроены*\n\n"
-            "Нет переменной окружения `GOOGLE_CREDENTIALS_JSON`. "
-            "Без неё `/reauth` не сработает — Google OAuth не знает откуда брать `client_id`.\n\n"
-            "*Что делать:*\n"
-            "1\\. Создай OAuth client \\(Desktop\\) в Google Cloud Console и скачай `credentials.json`\\.\n"
-            "2\\. Локально: `python bot/scripts/env_from_json.py` — он откроет браузер, "
-            "сделает auth и выведет готовые `GOOGLE_CREDENTIALS_JSON=` и `GOOGLE_TOKEN_JSON=`\\.\n"
-            "3\\. Скопируй обе строки в DigitalOcean → Settings → Environment Variables \\(Encrypted\\)\\.\n"
-            "4\\. Передеплой бота — `/reauth` больше не понадобится\\.",
+            f"❌ Не удалось подготовить OAuth\\-flow:\n`{err}`\n\n"
+            "Скорее всего `GOOGLE_CREDENTIALS_JSON` содержит невалидный JSON\\. "
+            "Перегенери через `bot/scripts/env_from_json.py` и обнови env var\\. "
+            "Потом нажми /reauth заново\\.",
             parse_mode="MarkdownV2",
             disable_web_page_preview=True,
         )
+        return
+
+    text = (
+        "🔑 *Google авторизация*\n\n"
+        f"1\\. Перейди по [этой ссылке]({auth_url}) и разреши доступ\\. "
+        "Поставь галочки на ОБА scope: Calendar и Tasks\\.\n"
+        "2\\. Браузер перебросит на `http://localhost/...` — страница НЕ откроется "
+        "\\(это нормально\\)\\.\n"
+        "3\\. Скопируй ВСЮ ссылку из адресной строки и пришли её боту:\n"
+        "`/auth_code <ссылка>`\n\n"
+        "_Если ошибка — просто введи код заново\\. /auth\\_cancel сбросит "
+        "сеанс, потом /reauth\\._"
+    )
+    await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -925,6 +959,27 @@ async def cmd_settings(message: Message) -> None:
         return
     from app.handlers.settings import send_settings_menu
     await send_settings_menu(message)
+
+
+@router.message(Command("set_creds"))
+async def cmd_set_creds(message: Message) -> None:
+    """
+    Быстрый ввод credentials.json без навигации в /settings.
+    После сохранения /reauth сразу работает.
+    """
+    if not _is_owner(message):
+        await message.answer("⛔ Эта команда доступна только владельцу.")
+        return
+    from app.handlers.settings import _set_session
+    _set_session(message.from_user.id, "GOOGLE_CREDENTIALS_JSON")
+    await message.answer(
+        "📋 Пришли содержимое `credentials.json` следующим сообщением "
+        "(весь JSON одной строкой — от `{` до `}`).\n\n"
+        "Что нужно скачать: Google Cloud Console → APIs & Services → "
+        "Credentials → твой OAuth client → Download JSON.\n\n"
+        "После сохранения нажми /reauth.",
+        parse_mode="Markdown",
+    )
 
 
 @router.message(Command("reauth"))
