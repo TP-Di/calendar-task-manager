@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 async def init_db() -> None:
     """Создаёт таблицы если их нет. Включает WAL для concurrent reads."""
     async with aiosqlite.connect(config.DB_PATH) as db:
+        # busy_timeout помогает если другой процесс/тред успел открыть БД
+        # и держит lock на момент PRAGMA journal_mode=WAL
+        await db.execute("PRAGMA busy_timeout=5000")
         await db.execute("PRAGMA journal_mode=WAL")
         await db.execute("PRAGMA synchronous=NORMAL")
         await db.execute(
