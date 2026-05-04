@@ -36,14 +36,16 @@ async def send_token_expired(message: Message) -> None:
     """Отправляет сообщение с ссылкой для повторной авторизации Google."""
     try:
         auth_url = cal.get_auth_url()
+        # Plain text: Telegram сам делает URL кликабельным, никаких проблем
+        # с экранированием спец-символов MarkdownV2 в auth_url.
         text = (
-            "🔑 *Google токен истёк или был отозван*\n\n"
+            "🔑 Google токен истёк или был отозван\n\n"
             "Для повторной авторизации:\n"
-            f"1\\. Перейди по ссылке: [Авторизоваться в Google]({auth_url})\n"
-            "2\\. Разреши доступ и скопируй код\n"
-            "3\\. Отправь боту: `/auth_code КОД`"
+            f"1. Перейди по ссылке (она ниже):\n{auth_url}\n\n"
+            "2. Разреши доступ и скопируй код\n"
+            "3. Отправь боту: /auth_code КОД"
         )
-        await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
+        await message.answer(text, disable_web_page_preview=True)
     except Exception as e:
         logger.error("Ошибка генерации auth URL: %s", e)
         await message.answer("❌ Google токен истёк. Переменная GOOGLE_CREDENTIALS_JSON не задана или недействительна.")
@@ -907,10 +909,10 @@ async def cmd_auth_code(message: Message) -> None:
     code = parts[1].strip()
     try:
         cal.complete_auth(code)
-        await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
+        await message.answer("✅ Авторизация выполнена успешно! Google Calendar и Tasks снова доступны.")
     except Exception as e:
         logger.error("Ошибка при обмене кода авторизации: %s", e)
-        await message.answer(f"❌ Ошибка авторизации: `{e}`\nПроверь код и попробуй снова через /reauth", parse_mode="Markdown")
+        await message.answer(f"❌ Ошибка авторизации: {e}\nПроверь код и попробуй снова через /reauth")
 
 
 @router.message(Command("heatmap"))
