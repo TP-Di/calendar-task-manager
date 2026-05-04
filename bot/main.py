@@ -21,16 +21,14 @@ from app.services.briefing import send_briefing, send_weekly_retro
 from app.services.reminders import check_and_send_reminders, sync_completed_tasks
 from app.services.scheduler_ref import set_scheduler
 
-# Настройка логирования
+# Настройка логирования (только stdout/stderr на этом этапе).
+# SqliteLogHandler регистрируется в main() ПОСЛЕ init_db() — иначе фоновый
+# писатель и init_db гонятся за PRAGMA journal_mode=WAL → "database is locked".
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO),
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-# Дополнительно пишем логи в SQLite (доступ через SSH: sqlite3 data/bot.db)
-_db_log_handler = SqliteLogHandler(config.DB_PATH)
-_db_log_handler.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
-logging.getLogger().addHandler(_db_log_handler)
 logger = logging.getLogger(__name__)
 
 
@@ -193,8 +191,14 @@ async def main() -> None:
     # Создаём директорию для данных если не существует
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
 
-    # Инициализируем базу данных
+    # Инициализируем базу данных (включаем WAL до того как кто-то ещё откроет БД)
     await init_db()
+
+    # Только теперь подключаем SQLite log handler — БД уже в WAL-режиме
+    _db_log_handler = SqliteLogHandler(config.DB_PATH)
+    _db_log_handler.setLevel(getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
+    logging.getLogger().addHandler(_db_log_handler)
+    logger.info("SQLite log handler подключён")
 
     # Создаём бота и диспетчер
     bot = Bot(token=config.BOT_TOKEN)

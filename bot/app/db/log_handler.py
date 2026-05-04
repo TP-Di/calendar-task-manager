@@ -55,7 +55,8 @@ class SqliteLogHandler(logging.Handler):
         self._ensure_table()
 
     def _conn(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path)
+        # timeout=5 — ждём lock до 5 секунд вместо мгновенной OperationalError
+        return sqlite3.connect(self._db_path, timeout=5.0)
 
     def _ensure_table(self) -> None:
         with self._conn() as conn:

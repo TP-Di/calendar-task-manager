@@ -24,65 +24,29 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-def _looks_like_auth_error(e: Exception) -> bool:
-    """Эвристика: похоже ли исключение на проблему с Google OAuth."""
-    if isinstance(e, TokenExpiredError):
-        return True
-    s = str(e).lower()
-    return any(marker in s for marker in (
-        "invalid_grant", "invalid grant",
-        "token has been expired", "token expired",
-        "refreshtoken", "refresh_token",
-        "unauthorized", "401",
-        "forbidden", "403",
-        "google_credentials_json не задан",
-    ))
-
-
 async def _handle_error(message: Message, e: Exception) -> None:
-    """Обрабатывает ошибку: auth-проблемы → reauth flow, иначе — общее сообщение с хинтом /reauth."""
-    if _looks_like_auth_error(e):
+    """Обрабатывает ошибку: если это истёкший токен — шлёт ссылку реавторизации, иначе — текст ошибки."""
+    if isinstance(e, TokenExpiredError) or "invalid_grant" in str(e):
         await send_token_expired(message)
-        return
-    logger.error("Команда вернула ошибку: %s", e, exc_info=True)
-    await message.answer(
-        "❌ Произошла ошибка. Попробуй ещё раз.\n"
-        "Если повторяется — /reauth (переподключить Google) или /clear (сбросить историю)."
-    )
+    else:
+        await message.answer(f"❌ Ошибка: {e}")
 
 
 async def send_token_expired(message: Message) -> None:
     """Отправляет сообщение с ссылкой для повторной авторизации Google."""
     try:
-        user_id = message.from_user.id if message.from_user else 0
-        auth_url = cal.get_auth_url(user_id)
+        auth_url = cal.get_auth_url()
         text = (
-            "🔑 *Google авторизация*\n\n"
-            f"1\\. Перейди по [этой ссылке]({auth_url}) и разреши доступ\\. "
-            "Поставь галочки на ОБА scope: Calendar и Tasks\\.\n"
-            "2\\. Браузер перебросит на `http://localhost/...` — страница НЕ откроется "
-            "\\(это нормально\\)\\.\n"
-            "3\\. Скопируй ВСЮ ссылку из адресной строки и пришли её боту:\n"
-            "`/auth_code <ссылка>`\n\n"
-            "_Если ошибка — просто введи код заново\\. /auth\\_cancel сбросит "
-            "сеанс, потом /reauth\\._"
+            "🔑 *Google токен истёк или был отозван*\n\n"
+            "Для повторной авторизации:\n"
+            f"1\\. Перейди по ссылке: [Авторизоваться в Google]({auth_url})\n"
+            "2\\. Разреши доступ и скопируй код\n"
+            "3\\. Отправь боту: `/auth_code КОД`"
         )
         await message.answer(text, parse_mode="MarkdownV2", disable_web_page_preview=True)
     except Exception as e:
         logger.error("Ошибка генерации auth URL: %s", e)
-        await message.answer(
-            "❌ *Google credentials не настроены*\n\n"
-            "Нет переменной окружения `GOOGLE_CREDENTIALS_JSON`. "
-            "Без неё `/reauth` не сработает — Google OAuth не знает откуда брать `client_id`.\n\n"
-            "*Что делать:*\n"
-            "1\\. Создай OAuth client \\(Desktop\\) в Google Cloud Console и скачай `credentials.json`\\.\n"
-            "2\\. Локально: `python bot/scripts/env_from_json.py` — он откроет браузер, "
-            "сделает auth и выведет готовые `GOOGLE_CREDENTIALS_JSON=` и `GOOGLE_TOKEN_JSON=`\\.\n"
-            "3\\. Скопируй обе строки в DigitalOcean → Settings → Environment Variables \\(Encrypted\\)\\.\n"
-            "4\\. Передеплой бота — `/reauth` больше не понадобится\\.",
-            parse_mode="MarkdownV2",
-            disable_web_page_preview=True,
-        )
+        await message.answer("❌ Google токен истёк. Переменная GOOGLE_CREDENTIALS_JSON не задана или недействительна.")
 
 MAIN_KB = ReplyKeyboardMarkup(
     keyboard=[
@@ -929,88 +893,24 @@ async def cmd_settings(message: Message) -> None:
 
 @router.message(Command("reauth"))
 async def cmd_reauth(message: Message) -> None:
-    """Генерирует ссылку для повторной авторизации Google (только для OWNER_ID)."""
-    if not _is_owner(message):
-        await message.answer("⛔ Эта команда доступна только владельцу.")
-        return
+    """Генерирует ссылку для повторной авторизации Google."""
     await send_token_expired(message)
 
 
 @router.message(Command("auth_code"))
 async def cmd_auth_code(message: Message) -> None:
-    """Принимает код авторизации Google и сохраняет токен (только для OWNER_ID)."""
-    if not _is_owner(message):
-        await message.answer("⛔ Эта команда доступна только владельцу.")
-        return
+    """Принимает код авторизации Google и сохраняет токен."""
     parts = (message.text or "").split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        await message.answer(
-            "Использование: `/auth_code <код или URL>`",
-            parse_mode="Markdown",
-        )
+        await message.answer("Использование: `/auth_code КОД`", parse_mode="Markdown")
         return
     code = parts[1].strip()
-    user_id = message.from_user.id
-
-    progress = await message.answer("⏳ Проверяю код...")
-
     try:
-        # complete_auth делает HTTP-запрос к Google + файловые операции — выносим в поток
-        await asyncio.to_thread(cal.complete_auth, code, user_id)
+        cal.complete_auth(code)
+        await message.answer("✅ Авторизация выполнена успешно\\! Google Calendar и Tasks снова доступны\\.", parse_mode="MarkdownV2")
     except Exception as e:
-        logger.error("Ошибка при обмене кода авторизации: %s", e, exc_info=True)
-        try:
-            await progress.delete()
-        except Exception:
-            pass
-        err_msg = str(e) or type(e).__name__
-        if len(err_msg) > 500:
-            err_msg = err_msg[:500] + "..."
-        await message.answer(
-            f"❌ Ошибка авторизации:\n`{err_msg}`\n\n"
-            "Если ошибка про `state` — попробуй открыть СВЕЖУЮ ссылку из /reauth, "
-            "не старую из истории чата.\n"
-            "Если ошибка про `redirect_uri_mismatch` — добавь "
-            "`http://localhost` в Authorized redirect URIs в Google Cloud Console.\n"
-            "Иначе — /reauth и заново.",
-            parse_mode="Markdown",
-        )
-        return
-
-    # Токен сохранён. Делаем тестовый API-вызов чтобы убедиться что он работает.
-    try:
-        from datetime import datetime, timedelta, timezone as _tz
-        now = datetime.now(_tz.utc)
-        await cal.get_events(now.isoformat(), (now + timedelta(days=1)).isoformat())
-        verified = "✅ Тестовый запрос к календарю прошёл."
-    except Exception as e:
-        logger.warning("Token saved but test API call failed: %s", e)
-        verified = (
-            "⚠️ Токен сохранён, но тестовый запрос упал: "
-            f"`{str(e)[:200]}`. Попробуй /status — если работает, всё ок."
-        )
-
-    try:
-        await progress.delete()
-    except Exception:
-        pass
-    await message.answer(
-        f"✅ Авторизация выполнена.\n{verified}",
-        parse_mode="Markdown",
-    )
-
-
-@router.message(Command("auth_cancel"))
-async def cmd_auth_cancel(message: Message) -> None:
-    """Сбрасывает застрявший OAuth-сеанс (если /auth_code не получается)."""
-    if not _is_owner(message):
-        await message.answer("⛔ Эта команда доступна только владельцу.")
-        return
-    user_id = message.from_user.id
-    if cal.cancel_auth(user_id):
-        await message.answer("🗑 Активный auth-сеанс отменён. Запусти /reauth заново.")
-    else:
-        await message.answer("Нет активного auth-сеанса.")
+        logger.error("Ошибка при обмене кода авторизации: %s", e)
+        await message.answer(f"❌ Ошибка авторизации: `{e}`\nПроверь код и попробуй снова через /reauth", parse_mode="Markdown")
 
 
 @router.message(Command("heatmap"))
