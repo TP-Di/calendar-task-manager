@@ -3,6 +3,7 @@ AI агент на базе Groq API с tool calling.
 Системный промпт, цикл tool calling, история диалога.
 """
 
+import difflib
 import json
 import logging
 import re
@@ -506,14 +507,35 @@ async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
     except Exception as e:
         return tool_args, f"❌ Ошибка получения задач: {e}"
 
-    search = _strip_emoji(task_title).lower()
-    matches = [t for t in tasks if search in _strip_emoji(t.get("title", "")).lower()]
-    if not matches:
-        return tool_args, f"❌ Задача «{task_title}» не найдена среди активных."
+    # Многоуровневый матч: LLM часто "исправляет" пользовательский typo при
+    # вызове tool, поэтому одной substring-проверки мало.
+    search = _strip_emoji(task_title).lower().strip()
+    normalized = [(t, _strip_emoji(t.get("title", "")).lower().strip()) for t in tasks]
 
-    # Точное совпадение (без эмодзи) предпочтительнее частичного
-    exact = [t for t in matches if _strip_emoji(t.get("title", "")).lower() == search]
-    candidates = exact if exact else matches
+    # 1. Exact match
+    exact = [t for t, n in normalized if n == search]
+    if exact:
+        candidates = exact
+    else:
+        # 2. Bidirectional substring — ловит typo с обеих сторон длины
+        bi = [t for t, n in normalized if n and (search in n or n in search)]
+        if bi:
+            candidates = bi
+        else:
+            # 3. Difflib-сходство ≥ 0.80 (typo, переставленные слова)
+            scored = [
+                (t, difflib.SequenceMatcher(None, search, n).ratio())
+                for t, n in normalized
+                if n
+            ]
+            scored = [(t, r) for t, r in scored if r >= 0.80]
+            scored.sort(key=lambda x: -x[1])
+            if not scored:
+                return tool_args, f"❌ Задача «{task_title}» не найдена среди активных."
+            top_score = scored[0][1]
+            # Все кандидаты в окне 0.05 от лучшего — иначе можно поймать
+            # случайно похожую задачу
+            candidates = [t for t, r in scored if top_score - r < 0.05]
 
     if len(candidates) > 1:
         # H6: не выбираем случайно — просим уточнить
