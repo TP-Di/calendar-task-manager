@@ -8,6 +8,7 @@ import logging
 import re
 from datetime import datetime, timezone, timedelta
 
+from googleapiclient.errors import HttpError
 from openai import AsyncOpenAI
 
 from app.config import config
@@ -543,6 +544,35 @@ async def _resolve_task_id(tool_args: dict) -> tuple[dict, str | None]:
     return {**tool_args, "task_id": candidates[0]["id"]}, None
 
 
+def _format_http_error(exc: HttpError) -> str:
+    """
+    Достаёт максимально подробное сообщение из HttpError для пользователя.
+    Google нередко прячет реальную причину в error.errors[0].message,
+    тогда как верхний error.message — просто «Bad Request».
+    """
+    status = getattr(getattr(exc, "resp", None), "status", "?")
+    try:
+        content = exc.content
+        if isinstance(content, (bytes, bytearray)):
+            content = content.decode("utf-8", errors="replace")
+        data = json.loads(content)
+        err = data.get("error", {})
+        details = err.get("errors") or []
+        if details and isinstance(details, list):
+            d0 = details[0] or {}
+            msg = (d0.get("message") or "").strip()
+            reason = (d0.get("reason") or "").strip()
+            if msg and msg != "Bad Request":
+                tail = f" ({reason})" if reason and reason != "badRequest" else ""
+                return f"{status} {msg}{tail}"
+        top_msg = (err.get("message") or "").strip()
+        if top_msg and top_msg != "Bad Request":
+            return f"{status} {top_msg}"
+    except Exception:
+        pass
+    return f"{status} {str(exc)[:300]}"
+
+
 async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
     """Выполняет один подтверждённый tool и возвращает форматированный результат."""
     _eid = tool_args.get("event_id", "")
@@ -561,6 +591,10 @@ async def _execute_single_tool(tool_name: str, tool_args: dict) -> str:
         result = await _TOOL_DISPATCH[tool_name](tool_args)
     except TokenExpiredError:
         raise  # пробрасываем наверх → handle_confirmation → send_token_expired
+    except HttpError as e:
+        err_msg = _format_http_error(e)
+        logger.error("Google API error в tool %s: %s", tool_name, err_msg, exc_info=True)
+        return f"❌ Ошибка Google API: {err_msg}"
     except Exception as e:
         logger.error("Ошибка выполнения tool %s: %s", tool_name, e, exc_info=True)
         err_msg = str(e) or type(e).__name__
