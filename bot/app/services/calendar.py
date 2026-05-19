@@ -287,6 +287,46 @@ def _build_service():
     return build("calendar", "v3", credentials=creds)
 
 
+def _strip_tz_suffix(dt_str: str) -> str:
+    """
+    Убирает 'Z' или '±HH:MM'/'±HHMM' в конце ISO datetime — мы всегда
+    передаём timeZone в отдельном поле, а дублирование смещения иногда
+    провоцирует 400 Bad Request от Google без подробностей.
+    """
+    if not dt_str:
+        return dt_str
+    s = dt_str.rstrip()
+    if s.endswith("Z"):
+        return s[:-1]
+    if len(s) >= 6 and s[-6] in ("+", "-") and s[-3] == ":":
+        return s[:-6]
+    if len(s) >= 5 and s[-5] in ("+", "-") and s[-4:-2].isdigit() and s[-2:].isdigit():
+        return s[:-5]
+    return s
+
+
+def _safe_timezone() -> str:
+    """Возвращает валидную IANA-зону; пустую/битую заменяет на UTC."""
+    import zoneinfo
+    tz = (config.TIMEZONE or "").strip()
+    if not tz:
+        return "UTC"
+    try:
+        zoneinfo.ZoneInfo(tz)
+        return tz
+    except Exception:
+        logger.warning("config.TIMEZONE невалидна (%r) — fallback на UTC", tz)
+        return "UTC"
+
+
+def _http_error_response(exc: HttpError) -> str:
+    """Декодирует exc.content в строку (для логов)."""
+    content = exc.content
+    if isinstance(content, (bytes, bytearray)):
+        return content[:1000].decode("utf-8", errors="replace")
+    return str(content)[:1000]
+
+
 def _format_event(event: dict) -> dict:
     """Приводит событие Google Calendar к удобному формату."""
     start = event.get("start", {})
@@ -341,21 +381,37 @@ async def create_event(
 
     def _create():
         service = _build_service()
+        tz = _safe_timezone()
         body: dict[str, Any] = {
             "summary": title,
             "description": full_description,
-            "start": {"dateTime": start, "timeZone": config.TIMEZONE},
-            "end": {"dateTime": end, "timeZone": config.TIMEZONE},
+            "start": {"dateTime": _strip_tz_suffix(start), "timeZone": tz},
+            "end":   {"dateTime": _strip_tz_suffix(end),   "timeZone": tz},
         }
         if recurrence:
-            body["recurrence"] = recurrence
+            if isinstance(recurrence, str):
+                body["recurrence"] = [recurrence]
+            elif isinstance(recurrence, list):
+                body["recurrence"] = [str(r) for r in recurrence if r]
         if reminder_minutes is not None:
+            try:
+                mins = int(reminder_minutes)
+            except (TypeError, ValueError):
+                mins = 30
+            mins = max(0, min(mins, 40320))  # Google API: 0..4 недели
             body["reminders"] = {
                 "useDefault": False,
-                "overrides": [{"method": "popup", "minutes": int(reminder_minutes)}],
+                "overrides": [{"method": "popup", "minutes": mins}],
             }
-        logger.debug("create_event body: %s", body)
-        event = service.events().insert(calendarId="primary", body=body).execute()
+        logger.info("create_event body: %s", body)
+        try:
+            event = service.events().insert(calendarId="primary", body=body).execute()
+        except HttpError as exc:
+            logger.error(
+                "Google rejected create_event (status=%s). Body=%s. Response=%s",
+                getattr(exc.resp, "status", "?"), body, _http_error_response(exc),
+            )
+            raise
         logger.info("Создано событие: %s (%s)", title, event.get("id"))
         return _format_event(event)
 
@@ -440,21 +496,30 @@ async def update_event(event_id: str, fields: dict) -> dict:
     """Обновляет поля существующего события через PATCH (только изменённые поля)."""
     def _patch():
         service = _build_service()
+        tz = _safe_timezone()
         patch_body: dict = {}
         if "title" in fields:
             patch_body["summary"] = fields["title"]
         if "description" in fields:
             patch_body["description"] = fields["description"]
         if "start" in fields:
-            patch_body["start"] = {"dateTime": fields["start"], "timeZone": config.TIMEZONE}
+            patch_body["start"] = {"dateTime": _strip_tz_suffix(fields["start"]), "timeZone": tz}
         if "end" in fields:
-            patch_body["end"] = {"dateTime": fields["end"], "timeZone": config.TIMEZONE}
+            patch_body["end"] = {"dateTime": _strip_tz_suffix(fields["end"]), "timeZone": tz}
 
-        updated = (
-            service.events()
-            .patch(calendarId="primary", eventId=event_id, body=patch_body)
-            .execute()
-        )
+        logger.info("update_event body (id=%s): %s", event_id, patch_body)
+        try:
+            updated = (
+                service.events()
+                .patch(calendarId="primary", eventId=event_id, body=patch_body)
+                .execute()
+            )
+        except HttpError as exc:
+            logger.error(
+                "Google rejected update_event (status=%s, id=%s). Body=%s. Response=%s",
+                getattr(exc.resp, "status", "?"), event_id, patch_body, _http_error_response(exc),
+            )
+            raise
         logger.info("Обновлено событие: %s", event_id)
         return _format_event(updated)
 
